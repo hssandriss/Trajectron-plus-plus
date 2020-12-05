@@ -77,6 +77,7 @@ class MultimodalGenerativeCVAE(object):
                                                    bidirectional=True,
                                                    batch_first=True))
         # These are related to how you initialize states for the node future encoder.
+        # TODO: Check why node_future_encoder/initial_h should receive size 6 and not 2   
         self.add_submodule(self.node_type + '/node_future_encoder/initial_h',
                            model_if_absent=nn.Linear(self.state_length,
                                                      self.hyperparams['enc_rnn_dim_future']))
@@ -376,13 +377,16 @@ class MultimodalGenerativeCVAE(object):
 
         :param mode: Mode in which the model is operated. E.g. Train, Eval, Predict.
         :param inputs: Input tensor including the state for each agent over time [bs, t, state].
+        # TODO input = Node History [256, 8, 6]
         :param inputs_st: Standardized input tensor.
         :param labels: Label tensor including the label output for each agent over time [bs, t, pred_state].
         :param labels_st: Standardized label tensor.
         :param first_history_indices: First timestep (index) in scene for which data is available for a node [bs]
         :param neighbors: Preprocessed dict (indexed by edge type) of list of neighbor states over time.
                             [[bs, t, neighbor state]]
+                          # TODO List of BS of list of nb neighbors of tensors [t, neighbor state]
         :param neighbors_edge_value: Preprocessed edge values for all neighbor nodes [[N]]
+        # TODO List of Bs of tensors of shape [nb neighbors]
         :param robot: Standardized robot state over time. [bs, t, robot_state]
         :param map: Tensor of Map information. [bs, channels, x, y]
         :return: tuple(x, x_nr_t, y_e, y_r, y, n_s_t0)
@@ -390,8 +394,8 @@ class MultimodalGenerativeCVAE(object):
             - x: Encoded input / condition tensor to the CVAE x_e.
             - x_r_t: Robot state (if robot is in scene).
             - y_e: Encoded label / future of the node.
-            - y_r: Encoded future of the robot.
-            - y: Label / future of the node.
+            - y_r: Encoded future of the robot. (Future Motion Plan of ego agent)
+            - y: Label / future of the node. (Ground truth)
             - n_s_t0: Standardized current state of the node.
         """
 
@@ -399,11 +403,11 @@ class MultimodalGenerativeCVAE(object):
         initial_dynamics = dict()
 
         batch_size = inputs.shape[0]
-
+        import pdb; pdb.set_trace()
         #########################################
         # Provide basic information to encoders #
         #########################################
-        node_history = inputs
+        node_history = inputs 
         node_present_state = inputs[:, -1]
         node_pos = inputs[:, -1, 0:2]
         node_vel = inputs[:, -1, 2:4]
@@ -549,13 +553,14 @@ class MultimodalGenerativeCVAE(object):
                 edge_states_list.append(torch.zeros((1, max_hl + 1, neighbor_state_length), device=self.device))
             else:
                 edge_states_list.append(torch.stack(neighbor_states, dim=0).to(self.device))
-
+        # TODO This results => list of Bs tensors of shape [7, 8, 6] 
         if self.hyperparams['edge_state_combine_method'] == 'sum':
             # Used in Structural-RNN to combine edges as well.
             op_applied_edge_states_list = list()
             for neighbors_state in edge_states_list:
                 op_applied_edge_states_list.append(torch.sum(neighbors_state, dim=0))
             combined_neighbors = torch.stack(op_applied_edge_states_list, dim=0)
+            # TODO This results => in tensor [Bs, T, State]
             if self.hyperparams['dynamic_edges'] == 'yes':
                 # Should now be (bs, time, 1)
                 op_applied_edge_mask_list = list()
@@ -593,6 +598,7 @@ class MultimodalGenerativeCVAE(object):
                 combined_edge_masks = torch.stack(op_applied_edge_mask_list, dim=0)
 
         joint_history = torch.cat([combined_neighbors, node_history_st], dim=-1)
+        # TODO => joint history combind neighbors [Bs, T, State] and Ego history with [Bs, T, State] => [Bs, T, State*2] 
 
         outputs, _ = run_lstm_on_variable_length_seqs(
             self.node_modules[DirectedEdge.get_str_from_types(*edge_type) + '/edge_encoder'],

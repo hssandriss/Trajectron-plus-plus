@@ -65,6 +65,7 @@ class Trajectron(object):
             self.node_models_dict[node_type].step_annealers()
 
     def train_loss(self, batch, node_type):
+        # TODO DATA explained here
         (first_history_index,
          x_t, y_t, x_st_t, y_st_t,
          neighbors_data_st,
