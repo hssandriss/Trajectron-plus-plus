@@ -403,7 +403,6 @@ class MultimodalGenerativeCVAE(object):
         initial_dynamics = dict()
 
         batch_size = inputs.shape[0]
-        import pdb; pdb.set_trace()
         #########################################
         # Provide basic information to encoders #
         #########################################
