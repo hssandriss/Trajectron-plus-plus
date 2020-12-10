@@ -739,6 +739,7 @@ class MultiHypothesisNet(object):
         _, min_indices = torch.min(dist, dim=1)
         # here min_indices has shape [bs]
         # We need to collect from every row the minimum using indices and produce [bs, 2] tensor.
+        # https://medium.com/analytics-vidhya/understanding-indexing-with-pytorch-gather-33717a84ebc4
         min_indices = min_indices.unsqueeze(1).unsqueeze(1).repeat(1, 1, 2)
         return mus.gather(1, min_indices).squeeze()
 
