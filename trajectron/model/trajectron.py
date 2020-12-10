@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from model.mgcvae import MultimodalGenerativeCVAE
+from model.multi_hyp import MultiHypothesisNet
 from model.dataset import get_timesteps_data, restore
 
 
@@ -27,7 +28,8 @@ class Trajectron(object):
         self.state_length = dict()
         for state_type in self.state.keys():
             self.state_length[state_type] = int(
-                np.sum([len(entity_dims) for entity_dims in self.state[state_type].values()])
+                np.sum([len(entity_dims)
+                        for entity_dims in self.state[state_type].values()])
             )
         self.pred_state = self.hyperparams['pred_state']
 
@@ -40,29 +42,29 @@ class Trajectron(object):
         for node_type in env.NodeType:
             # Only add a Model for NodeTypes we want to predict
             if node_type in self.pred_state.keys():
-                self.node_models_dict[node_type] = MultimodalGenerativeCVAE(env,
-                                                                            node_type,
-                                                                            self.model_registrar,
-                                                                            self.hyperparams,
-                                                                            self.device,
-                                                                            edge_types,
-                                                                            log_writer=self.log_writer)
+                self.node_models_dict[node_type] = MultiHypothesisNet(env,
+                                                                      node_type,
+                                                                      self.model_registrar,
+                                                                      self.hyperparams,
+                                                                      self.device,
+                                                                      edge_types,
+                                                                      log_writer=self.log_writer)
 
     def set_curr_iter(self, curr_iter):
         self.curr_iter = curr_iter
         for node_str, model in self.node_models_dict.items():
             model.set_curr_iter(curr_iter)
 
-    def set_annealing_params(self):
-        for node_str, model in self.node_models_dict.items():
-            model.set_annealing_params()
+    # def set_annealing_params(self):
+    #     for node_str, model in self.node_models_dict.items():
+    #         model.set_annealing_params()
 
-    def step_annealers(self, node_type=None):
-        if node_type is None:
-            for node_type in self.node_models_dict:
-                self.node_models_dict[node_type].step_annealers()
-        else:
-            self.node_models_dict[node_type].step_annealers()
+    # def step_annealers(self, node_type=None):
+    #     if node_type is None:
+    #         for node_type in self.node_models_dict:
+    #             self.node_models_dict[node_type].step_annealers()
+    #     else:
+    #         self.node_models_dict[node_type].step_annealers()
 
     def train_loss(self, batch, node_type):
         # TODO DATA explained here
@@ -90,7 +92,8 @@ class Trajectron(object):
                                 labels=y,
                                 labels_st=y_st_t,
                                 neighbors=restore(neighbors_data_st),
-                                neighbors_edge_value=restore(neighbors_edge_value),
+                                neighbors_edge_value=restore(
+                                    neighbors_edge_value),
                                 robot=robot_traj_st_t,
                                 map=map,
                                 prediction_horizon=self.ph)
@@ -122,7 +125,8 @@ class Trajectron(object):
                               labels=y,
                               labels_st=y_st_t,
                               neighbors=restore(neighbors_data_st),
-                              neighbors_edge_value=restore(neighbors_edge_value),
+                              neighbors_edge_value=restore(
+                                  neighbors_edge_value),
                               robot=robot_traj_st_t,
                               map=map,
                               prediction_horizon=self.ph)
@@ -191,6 +195,7 @@ class Trajectron(object):
             for i, ts in enumerate(timesteps_o):
                 if ts not in predictions_dict.keys():
                     predictions_dict[ts] = dict()
-                predictions_dict[ts][nodes[i]] = np.transpose(predictions_np[:, [i]], (1, 0, 2, 3))
+                predictions_dict[ts][nodes[i]] = np.transpose(
+                    predictions_np[:, [i]], (1, 0, 2, 3))
 
         return predictions_dict

@@ -71,6 +71,8 @@ def main():
     hyperparams['use_map_encoding'] = args.map_encoding
     hyperparams['augment'] = args.augment
     hyperparams['override_attention_radius'] = args.override_attention_radius
+    hyperparams['Enc_FC_dims'] = 128
+    hyperparams['num_hyp'] = 20
 
     print('-----------------------')
     print('| TRAINING PARAMETERS |')
@@ -205,7 +207,7 @@ def main():
                             args.device)
 
     trajectron.set_environment(train_env)
-    trajectron.set_annealing_params()
+    # trajectron.set_annealing_params()
     print('Created Training Model.')
 
     eval_trajectron = None
@@ -215,7 +217,7 @@ def main():
                                      log_writer,
                                      args.eval_device)
         eval_trajectron.set_environment(eval_env)
-        eval_trajectron.set_annealing_params()
+        # eval_trajectron.set_annealing_params()
     print('Created Evaluation Model.')
 
     optimizer = dict()
@@ -244,7 +246,7 @@ def main():
             pbar = tqdm(data_loader, ncols=80)
             for batch in pbar:
                 trajectron.set_curr_iter(curr_iter)
-                trajectron.step_annealers(node_type)
+                # trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
                 train_loss = trajectron.train_loss(batch, node_type)
                 pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
