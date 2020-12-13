@@ -163,7 +163,7 @@ class MultiHypothesisNet(object):
         if self.hyperparams['incl_robot_node']:
             decoder_input_dims = self.pred_state_length + self.robot_state_length + z_size
         else:
-            decoder_input_dims = self.pred_state_length + z_size 
+            decoder_input_dims = self.pred_state_length + z_size
 
         num_hyp = self.hyperparams['num_hyp']*2
         self.add_submodule(self.node_type + '/decoder/rnn_cell',
@@ -721,27 +721,62 @@ class MultiHypothesisNet(object):
             pred_mu = self.dynamic.integrate_samples(pred_mu, x)
             mus.append(pred_mu)
             gt = y[:, t, :]
-            mu = self.closest_mu(pred_mu, gt)
+            mu = self.closest_mu(pred_mu, gt).detach()
             if self.hyperparams['incl_robot_node']:
                 input_ = torch.cat([z, mu, x_nr_t], dim=1)
             else:
                 input_ = torch.cat([z, mu], dim=1)
             h = h_state
-            import pdb; pdb.set_trace()
         hypotheses = torch.stack(mus, dim=1)
+        # [bs, horizon, num_hyp, 2]
         return hypotheses
 
     def closest_mu(self, mus, gt):
         gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'], 1)
-        import pdb; pdb.set_trace()
         dist = torch.sum((mus - gt)**2, dim=2)
-        dist = torch.sqrt(dist) 
+        dist = torch.sqrt(dist)
         _, min_indices = torch.min(dist, dim=1)
         # here min_indices has shape [bs]
         # We need to collect from every row the minimum using indices and produce [bs, 2] tensor.
         # https://medium.com/analytics-vidhya/understanding-indexing-with-pytorch-gather-33717a84ebc4
         min_indices = min_indices.unsqueeze(1).unsqueeze(1).repeat(1, 1, 2)
         return mus.gather(1, min_indices).squeeze()
+
+    def wta(self, gt, hyp):
+        """
+        Calculates the WTA Loss
+        :param gt [bs, horizon, 2]
+        :param hyp [bs, horizon, n_hyp, 2]
+        """
+        eps = 0.001
+        # gt -> [bs, horizon, num_hyp, 2]
+        gt = gt.unsqueeze(2).repeat(1, 1, self.hyperparams['num_hyp'], 1)
+        dist = torch.sum((hyp - gt)**2, dim=3)  # [bs, horizon, num_hyp]
+        dist = torch.sqrt(dist + eps)  # [bs, horizon, num_hyp]
+        min_loss, _ = torch.min(dist, dim=2)  # [bs, horizon]
+        losses = min_loss.mean()  # mean over bs and horizon
+        return losses
+
+    def ewta(self, gt, hyp, top_n=8):
+        """
+        Calculates the Evolved WTA Loss
+        :param gt [bs, horizon, 2]
+        :param hyp [bs, horizon, n_hyp, 2]
+        :param top_n initially num hyp (according to the paper)
+        """
+        sum_losses = 0.0
+        eps = 0.001
+        # gt -> [bs, horizon, num_hyp, 2]
+        gt = gt.unsqueeze(2).repeat(1, 1, self.hyperparams['num_hyp'], 1)
+        dist = torch.sum((hyp - gt)**2, dim=3)  # [bs, horizon, num_hyp]
+        dist = torch.sqrt(dist + eps)  # [bs, horizon, num_hyp]
+        min_loss, _ = torch.topk(
+            dist, k=top_n, dim=2, largest=False, sorted=True)
+        # min_loss => [bs, horizon, top_hyp]
+        for i in range(top_n):
+            losses = min_loss[:, :, i].mean()
+            sum_losses += losses
+        return sum_losses
 
     def train_loss(self,
                    inputs,
@@ -753,7 +788,8 @@ class MultiHypothesisNet(object):
                    neighbors_edge_value,
                    robot,
                    map,
-                   prediction_horizon) -> torch.Tensor:
+                   prediction_horizon,
+                   top_n) -> torch.Tensor:
         """
         Calculates the training loss for a batch.
 
@@ -771,19 +807,19 @@ class MultiHypothesisNet(object):
         :return: Scalar tensor -> nll loss
         """
         mode = ModeKeys.TRAIN
-        x, x_nr_t, y_e, y_r, y, n_s_t0  = self.obtain_encoded_tensors(mode=mode,
-                                           inputs=inputs,
-                                           inputs_st=inputs_st,
-                                           labels=labels,
-                                           labels_st=labels_st,
-                                           first_history_indices=first_history_indices,
-                                           neighbors=neighbors,
-                                           neighbors_edge_value=neighbors_edge_value,
-                                           robot=robot,
-                                           map=map)
+        x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                     inputs=inputs,
+                                                                     inputs_st=inputs_st,
+                                                                     labels=labels,
+                                                                     labels_st=labels_st,
+                                                                     first_history_indices=first_history_indices,
+                                                                     neighbors=neighbors,
+                                                                     neighbors_edge_value=neighbors_edge_value,
+                                                                     robot=robot,
+                                                                     map=map)
         z = self.encoder(x)
         y_hat = self.decoder(z, x, n_s_t0, x_nr_t, y,  prediction_horizon)
-        loss = 0
+        loss = self.ewta(labels, y_hat, top_n)
         return loss
 
     def eval_loss(self,
@@ -815,7 +851,6 @@ class MultiHypothesisNet(object):
         """
 
         mode = ModeKeys.EVAL
-
         x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
                                                                      inputs=inputs,
                                                                      inputs_st=inputs_st,
@@ -826,22 +861,10 @@ class MultiHypothesisNet(object):
                                                                      neighbors_edge_value=neighbors_edge_value,
                                                                      robot=robot,
                                                                      map=map)
-
-        num_components = self.hyperparams['N'] * self.hyperparams['K']
-        # Importance sampled NLL estimate
-        z, _ = self.encoder(mode, x, y_e)  # [k_eval, nbs, N*K]
-        z = self.latent.sample_p(1, mode, full_dist=True)
-        y_dist, _ = self.p_y_xz(ModeKeys.PREDICT, x, x_nr_t, y_r, n_s_t0, z,
-                                prediction_horizon, num_samples=1, num_components=num_components)
-        # We use unstandardized labels to compute the loss
-        log_p_yt_xz = torch.clamp(y_dist.log_prob(
-            labels), max=self.hyperparams['log_p_yt_xz_max'])
-        log_p_y_xz = torch.sum(log_p_yt_xz, dim=2)
-        log_p_y_xz_mean = torch.mean(log_p_y_xz, dim=0)  # [nbs]
-        log_likelihood = torch.mean(log_p_y_xz_mean)
-        nll = -log_likelihood
-
-        return nll
+        z = self.encoder(x)
+        y_hat = self.decoder(z, x, n_s_t0, x_nr_t, y,  prediction_horizon)
+        loss = self.wta(labels, y_hat)
+        return loss
 
     def predict(self,
                 inputs,

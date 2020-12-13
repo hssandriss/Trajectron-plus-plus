@@ -23,7 +23,8 @@ class MultimodalGenerativeCVAE(object):
         self.model_registrar = model_registrar
         self.log_writer = log_writer
         self.device = device
-        self.edge_types = [edge_type for edge_type in edge_types if edge_type[0] is node_type]
+        self.edge_types = [
+            edge_type for edge_type in edge_types if edge_type[0] is node_type]
         self.curr_iter = 0
 
         self.node_modules = dict()
@@ -33,17 +34,22 @@ class MultimodalGenerativeCVAE(object):
         self.ph = self.hyperparams['prediction_horizon']
         self.state = self.hyperparams['state']
         self.pred_state = self.hyperparams['pred_state'][node_type]
-        self.state_length = int(np.sum([len(entity_dims) for entity_dims in self.state[node_type].values()]))
+        self.state_length = int(
+            np.sum([len(entity_dims) for entity_dims in self.state[node_type].values()]))
         if self.hyperparams['incl_robot_node']:
             self.robot_state_length = int(
-                np.sum([len(entity_dims) for entity_dims in self.state[env.robot_type].values()])
+                np.sum([len(entity_dims)
+                        for entity_dims in self.state[env.robot_type].values()])
             )
-        self.pred_state_length = int(np.sum([len(entity_dims) for entity_dims in self.pred_state.values()]))
+        self.pred_state_length = int(
+            np.sum([len(entity_dims) for entity_dims in self.pred_state.values()]))
 
-        edge_types_str = [DirectedEdge.get_str_from_types(*edge_type) for edge_type in self.edge_types]
+        edge_types_str = [DirectedEdge.get_str_from_types(
+            *edge_type) for edge_type in self.edge_types]
         self.create_graphical_model(edge_types_str)
 
-        dynamic_class = getattr(dynamic_module, hyperparams['dynamic'][self.node_type]['name'])
+        dynamic_class = getattr(
+            dynamic_module, hyperparams['dynamic'][self.node_type]['name'])
         dyn_limits = hyperparams['dynamic'][self.node_type]['limits']
         self.dynamic = dynamic_class(self.env.scenes[0].dt, dyn_limits, device,
                                      self.model_registrar, self.x_size, self.node_type)
@@ -52,7 +58,8 @@ class MultimodalGenerativeCVAE(object):
         self.curr_iter = curr_iter
 
     def add_submodule(self, name, model_if_absent):
-        self.node_modules[name] = self.model_registrar.get_model(name, model_if_absent)
+        self.node_modules[name] = self.model_registrar.get_model(
+            name, model_if_absent)
 
     def clear_submodules(self):
         self.node_modules.clear()
@@ -77,7 +84,7 @@ class MultimodalGenerativeCVAE(object):
                                                    bidirectional=True,
                                                    batch_first=True))
         # These are related to how you initialize states for the node future encoder.
-        # TODO: Check why node_future_encoder/initial_h should receive size 6 and not 2   
+        # TODO: Check why node_future_encoder/initial_h should receive size 6 and not 2
         self.add_submodule(self.node_type + '/node_future_encoder/initial_h',
                            model_if_absent=nn.Linear(self.state_length,
                                                      self.hyperparams['enc_rnn_dim_future']))
@@ -120,7 +127,8 @@ class MultimodalGenerativeCVAE(object):
 
                 # Four times because we're trying to mimic a bi-directional
                 # LSTM's output (which, here, is c and h from both ends).
-                self.eie_output_dims = 4 * self.hyperparams['enc_rnn_dim_edge_influence']
+                self.eie_output_dims = 4 * \
+                    self.hyperparams['enc_rnn_dim_edge_influence']
 
             elif self.hyperparams['edge_influence_combine_method'] == 'attention':
                 # Chose additive attention because of https://arxiv.org/pdf/1703.03906.pdf
@@ -197,7 +205,8 @@ class MultimodalGenerativeCVAE(object):
         #   Decoder LSTM   #
         ####################
         if self.hyperparams['incl_robot_node']:
-            decoder_input_dims = self.pred_state_length + self.robot_state_length + z_size + x_size
+            decoder_input_dims = self.pred_state_length + \
+                self.robot_state_length + z_size + x_size
         else:
             decoder_input_dims = self.pred_state_length + z_size + x_size
 
@@ -236,9 +245,11 @@ class MultimodalGenerativeCVAE(object):
             if self.hyperparams['edge_state_combine_method'] == 'pointnet':
                 self.add_submodule(edge_type + '/pointnet_encoder',
                                    model_if_absent=nn.Sequential(
-                                       nn.Linear(self.state_length, 2 * self.state_length),
+                                       nn.Linear(self.state_length,
+                                                 2 * self.state_length),
                                        nn.ReLU(),
-                                       nn.Linear(2 * self.state_length, 2 * self.state_length),
+                                       nn.Linear(2 * self.state_length,
+                                                 2 * self.state_length),
                                        nn.ReLU()))
 
                 edge_encoder_input_size = 2 * self.state_length + self.state_length
@@ -292,7 +303,8 @@ class MultimodalGenerativeCVAE(object):
             # This is the value that we'll update on each call of
             # step_annealers().
             rsetattr(self, name, value_annealer(0).clone().detach())
-            dummy_optimizer = optim.Optimizer([rgetattr(self, name)], {'lr': value_annealer(0).clone().detach()})
+            dummy_optimizer = optim.Optimizer(
+                [rgetattr(self, name)], {'lr': value_annealer(0).clone().detach()})
             rsetattr(self, name + '_optimizer', dummy_optimizer)
 
             value_scheduler = CustomLR(dummy_optimizer,
@@ -346,8 +358,8 @@ class MultimodalGenerativeCVAE(object):
                     rgetattr(self, annealed_var + '_scheduler').step()
 
                 # Then we set the annealed vars' value.
-                rsetattr(self, annealed_var, rgetattr(self, annealed_var + '_optimizer').param_groups[0]['lr'])
-
+                rsetattr(self, annealed_var, rgetattr(
+                    self, annealed_var + '_optimizer').param_groups[0]['lr'])
         self.summarize_annealers()
 
     def summarize_annealers(self):
@@ -368,10 +380,10 @@ class MultimodalGenerativeCVAE(object):
                                neighbors_edge_value,
                                robot,
                                map) -> (torch.Tensor,
-                                          torch.Tensor,
-                                          torch.Tensor,
-                                          torch.Tensor,
-                                          torch.Tensor):
+                                        torch.Tensor,
+                                        torch.Tensor,
+                                        torch.Tensor,
+                                        torch.Tensor):
         """
         Encodes input and output tensors for node and robot.
 
@@ -406,7 +418,7 @@ class MultimodalGenerativeCVAE(object):
         #########################################
         # Provide basic information to encoders #
         #########################################
-        node_history = inputs 
+        node_history = inputs
         node_present_state = inputs[:, -1]
         node_pos = inputs[:, -1, 0:2]
         node_vel = inputs[:, -1, 2:4]
@@ -458,7 +470,8 @@ class MultimodalGenerativeCVAE(object):
                                                       neighbors[edge_type],
                                                       neighbors_edge_value[edge_type],
                                                       first_history_indices)
-                node_edges_encoded.append(encoded_edges_type)  # List of [bs/nbs, enc_rnn_dim]
+                # List of [bs/nbs, enc_rnn_dim]
+                node_edges_encoded.append(encoded_edges_type)
             #####################
             # Encode Node Edges #
             #####################
@@ -474,13 +487,16 @@ class MultimodalGenerativeCVAE(object):
             if self.log_writer and (self.curr_iter + 1) % 500 == 0:
                 map_clone = map.clone()
                 map_patch = self.hyperparams['map_encoder'][self.node_type]['patch_size']
-                map_clone[:, :, map_patch[1]-5:map_patch[1]+5, map_patch[0]-5:map_patch[0]+5] = 1.
+                map_clone[:, :, map_patch[1]-5:map_patch[1] +
+                          5, map_patch[0]-5:map_patch[0]+5] = 1.
                 self.log_writer.add_images(f"{self.node_type}/cropped_maps", map_clone,
                                            self.curr_iter, dataformats='NCWH')
 
-            encoded_map = self.node_modules[self.node_type + '/map_encoder'](map * 2. - 1., (mode == ModeKeys.TRAIN))
+            encoded_map = self.node_modules[self.node_type +
+                                            '/map_encoder'](map * 2. - 1., (mode == ModeKeys.TRAIN))
             do = self.hyperparams['map_encoder'][self.node_type]['dropout']
-            encoded_map = F.dropout(encoded_map, do, training=(mode == ModeKeys.TRAIN))
+            encoded_map = F.dropout(
+                encoded_map, do, training=(mode == ModeKeys.TRAIN))
 
         ######################################
         # Concatenate Encoder Outputs into x #
@@ -489,10 +505,12 @@ class MultimodalGenerativeCVAE(object):
 
         # Every node has an edge-influence encoder (which could just be zero).
         if self.hyperparams['edge_encoding']:
-            x_concat_list.append(total_edge_influence)  # [bs/nbs, 4*enc_rnn_dim]
+            # [bs/nbs, 4*enc_rnn_dim]
+            x_concat_list.append(total_edge_influence)
 
         # Every node has a history encoder.
-        x_concat_list.append(node_history_encoded)  # [bs/nbs, enc_rnn_dim_history]
+        # [bs/nbs, enc_rnn_dim_history]
+        x_concat_list.append(node_history_encoded)
 
         if self.hyperparams['incl_robot_node']:
             robot_future_encoder = self.encode_robot_future(mode, x_r_t, y_r)
@@ -525,7 +543,8 @@ class MultimodalGenerativeCVAE(object):
                                                       lower_indices=first_history_indices)
 
         outputs = F.dropout(outputs,
-                            p=1. - self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
+                            p=1. -
+                            self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
                             training=(mode == ModeKeys.TRAIN))  # [bs, max_time, enc_rnn_dim]
 
         last_index_per_sequence = -(first_history_indices + 1)
@@ -544,21 +563,27 @@ class MultimodalGenerativeCVAE(object):
         max_hl = self.hyperparams['maximum_history_length']
 
         edge_states_list = list()  # list of [#of neighbors, max_ht, state_dim]
-        for i, neighbor_states in enumerate(neighbors):  # Get neighbors for timestep in batch
+        # Get neighbors for timestep in batch
+        for i, neighbor_states in enumerate(neighbors):
             if len(neighbor_states) == 0:  # There are no neighbors for edge type # TODO necessary?
                 neighbor_state_length = int(
-                    np.sum([len(entity_dims) for entity_dims in self.state[edge_type[1]].values()])
+                    np.sum([len(entity_dims)
+                            for entity_dims in self.state[edge_type[1]].values()])
                 )
-                edge_states_list.append(torch.zeros((1, max_hl + 1, neighbor_state_length), device=self.device))
+                edge_states_list.append(torch.zeros(
+                    (1, max_hl + 1, neighbor_state_length), device=self.device))
             else:
-                edge_states_list.append(torch.stack(neighbor_states, dim=0).to(self.device))
-        # TODO This results => list of Bs tensors of shape [7, 8, 6] 
+                edge_states_list.append(torch.stack(
+                    neighbor_states, dim=0).to(self.device))
+        # TODO This results => list of Bs tensors of shape [7, 8, 6]
         if self.hyperparams['edge_state_combine_method'] == 'sum':
             # Used in Structural-RNN to combine edges as well.
             op_applied_edge_states_list = list()
             for neighbors_state in edge_states_list:
-                op_applied_edge_states_list.append(torch.sum(neighbors_state, dim=0))
-            combined_neighbors = torch.stack(op_applied_edge_states_list, dim=0)
+                op_applied_edge_states_list.append(
+                    torch.sum(neighbors_state, dim=0))
+            combined_neighbors = torch.stack(
+                op_applied_edge_states_list, dim=0)
             # TODO This results => in tensor [Bs, T, State]
             if self.hyperparams['dynamic_edges'] == 'yes':
                 # Should now be (bs, time, 1)
@@ -566,51 +591,62 @@ class MultimodalGenerativeCVAE(object):
                 for edge_value in neighbors_edge_value:
                     op_applied_edge_mask_list.append(torch.clamp(torch.sum(edge_value.to(self.device),
                                                                            dim=0, keepdim=True), max=1.))
-                combined_edge_masks = torch.stack(op_applied_edge_mask_list, dim=0)
+                combined_edge_masks = torch.stack(
+                    op_applied_edge_mask_list, dim=0)
 
         elif self.hyperparams['edge_state_combine_method'] == 'max':
             # Used in NLP, e.g. max over word embeddings in a sentence.
             op_applied_edge_states_list = list()
             for neighbors_state in edge_states_list:
-                op_applied_edge_states_list.append(torch.max(neighbors_state, dim=0))
-            combined_neighbors = torch.stack(op_applied_edge_states_list, dim=0)
+                op_applied_edge_states_list.append(
+                    torch.max(neighbors_state, dim=0))
+            combined_neighbors = torch.stack(
+                op_applied_edge_states_list, dim=0)
             if self.hyperparams['dynamic_edges'] == 'yes':
                 # Should now be (bs, time, 1)
                 op_applied_edge_mask_list = list()
                 for edge_value in neighbors_edge_value:
                     op_applied_edge_mask_list.append(torch.clamp(torch.max(edge_value.to(self.device),
                                                                            dim=0, keepdim=True), max=1.))
-                combined_edge_masks = torch.stack(op_applied_edge_mask_list, dim=0)
+                combined_edge_masks = torch.stack(
+                    op_applied_edge_mask_list, dim=0)
 
         elif self.hyperparams['edge_state_combine_method'] == 'mean':
             # Used in NLP, e.g. mean over word embeddings in a sentence.
             op_applied_edge_states_list = list()
             for neighbors_state in edge_states_list:
-                op_applied_edge_states_list.append(torch.mean(neighbors_state, dim=0))
-            combined_neighbors = torch.stack(op_applied_edge_states_list, dim=0)
+                op_applied_edge_states_list.append(
+                    torch.mean(neighbors_state, dim=0))
+            combined_neighbors = torch.stack(
+                op_applied_edge_states_list, dim=0)
             if self.hyperparams['dynamic_edges'] == 'yes':
                 # Should now be (bs, time, 1)
                 op_applied_edge_mask_list = list()
                 for edge_value in neighbors_edge_value:
                     op_applied_edge_mask_list.append(torch.clamp(torch.mean(edge_value.to(self.device),
                                                                             dim=0, keepdim=True), max=1.))
-                combined_edge_masks = torch.stack(op_applied_edge_mask_list, dim=0)
+                combined_edge_masks = torch.stack(
+                    op_applied_edge_mask_list, dim=0)
 
-        joint_history = torch.cat([combined_neighbors, node_history_st], dim=-1)
-        # TODO => joint history combind neighbors [Bs, T, State] and Ego history with [Bs, T, State] => [Bs, T, State*2] 
+        joint_history = torch.cat(
+            [combined_neighbors, node_history_st], dim=-1)
+        # TODO => joint history combind neighbors [Bs, T, State] and Ego history with [Bs, T, State] => [Bs, T, State*2]
 
         outputs, _ = run_lstm_on_variable_length_seqs(
-            self.node_modules[DirectedEdge.get_str_from_types(*edge_type) + '/edge_encoder'],
+            self.node_modules[DirectedEdge.get_str_from_types(
+                *edge_type) + '/edge_encoder'],
             original_seqs=joint_history,
             lower_indices=first_history_indices
         )
 
         outputs = F.dropout(outputs,
-                            p=1. - self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
+                            p=1. -
+                            self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
                             training=(mode == ModeKeys.TRAIN))  # [bs, max_time, enc_rnn_dim]
 
         last_index_per_sequence = -(first_history_indices + 1)
-        ret = outputs[torch.arange(last_index_per_sequence.shape[0]), last_index_per_sequence]
+        ret = outputs[torch.arange(
+            last_index_per_sequence.shape[0]), last_index_per_sequence]
         if self.hyperparams['dynamic_edges'] == 'yes':
             return ret * combined_edge_masks
         else:
@@ -631,22 +667,26 @@ class MultimodalGenerativeCVAE(object):
 
         elif self.hyperparams['edge_influence_combine_method'] == 'bi-rnn':
             if len(encoded_edges) == 0:
-                combined_edges = torch.zeros((batch_size, self.eie_output_dims), device=self.device)
+                combined_edges = torch.zeros(
+                    (batch_size, self.eie_output_dims), device=self.device)
 
             else:
                 # axis=1 because then we get size [batch_size, max_time, depth]
                 encoded_edges = torch.stack(encoded_edges, dim=1)
 
-                _, state = self.node_modules[self.node_type + '/edge_influence_encoder'](encoded_edges)
+                _, state = self.node_modules[self.node_type +
+                                             '/edge_influence_encoder'](encoded_edges)
                 combined_edges = unpack_RNN_state(state)
                 combined_edges = F.dropout(combined_edges,
-                                           p=1. - self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
+                                           p=1. -
+                                           self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
                                            training=(mode == ModeKeys.TRAIN))
 
         elif self.hyperparams['edge_influence_combine_method'] == 'attention':
             # Used in Social Attention (https://arxiv.org/abs/1710.04689)
             if len(encoded_edges) == 0:
-                combined_edges = torch.zeros((batch_size, self.eie_output_dims), device=self.device)
+                combined_edges = torch.zeros(
+                    (batch_size, self.eie_output_dims), device=self.device)
 
             else:
                 # axis=1 because then we get size [batch_size, max_time, depth]
@@ -654,7 +694,8 @@ class MultimodalGenerativeCVAE(object):
                 combined_edges, _ = self.node_modules[self.node_type + '/edge_influence_encoder'](encoded_edges,
                                                                                                   node_history_encoder)
                 combined_edges = F.dropout(combined_edges,
-                                           p=1. - self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
+                                           p=1. -
+                                           self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
                                            training=(mode == ModeKeys.TRAIN))
 
         return combined_edges
@@ -668,23 +709,29 @@ class MultimodalGenerativeCVAE(object):
         :param node_future: Future states of the node. [bs, ph, state]
         :return: Encoded future.
         """
-        initial_h_model = self.node_modules[self.node_type + '/node_future_encoder/initial_h']
-        initial_c_model = self.node_modules[self.node_type + '/node_future_encoder/initial_c']
+        initial_h_model = self.node_modules[self.node_type +
+                                            '/node_future_encoder/initial_h']
+        initial_c_model = self.node_modules[self.node_type +
+                                            '/node_future_encoder/initial_c']
 
         # Here we're initializing the forward hidden states,
         # but zeroing the backward ones.
         initial_h = initial_h_model(node_present)
-        initial_h = torch.stack([initial_h, torch.zeros_like(initial_h, device=self.device)], dim=0)
+        initial_h = torch.stack(
+            [initial_h, torch.zeros_like(initial_h, device=self.device)], dim=0)
 
         initial_c = initial_c_model(node_present)
-        initial_c = torch.stack([initial_c, torch.zeros_like(initial_c, device=self.device)], dim=0)
+        initial_c = torch.stack(
+            [initial_c, torch.zeros_like(initial_c, device=self.device)], dim=0)
 
         initial_state = (initial_h, initial_c)
 
-        _, state = self.node_modules[self.node_type + '/node_future_encoder'](node_future, initial_state)
+        _, state = self.node_modules[self.node_type +
+                                     '/node_future_encoder'](node_future, initial_state)
         state = unpack_RNN_state(state)
         state = F.dropout(state,
-                          p=1. - self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
+                          p=1. -
+                          self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
                           training=(mode == ModeKeys.TRAIN))
 
         return state
@@ -704,17 +751,21 @@ class MultimodalGenerativeCVAE(object):
         # Here we're initializing the forward hidden states,
         # but zeroing the backward ones.
         initial_h = initial_h_model(robot_present)
-        initial_h = torch.stack([initial_h, torch.zeros_like(initial_h, device=self.device)], dim=0)
+        initial_h = torch.stack(
+            [initial_h, torch.zeros_like(initial_h, device=self.device)], dim=0)
 
         initial_c = initial_c_model(robot_present)
-        initial_c = torch.stack([initial_c, torch.zeros_like(initial_c, device=self.device)], dim=0)
+        initial_c = torch.stack(
+            [initial_c, torch.zeros_like(initial_c, device=self.device)], dim=0)
 
         initial_state = (initial_h, initial_c)
 
-        _, state = self.node_modules['robot_future_encoder'](robot_future, initial_state)
+        _, state = self.node_modules['robot_future_encoder'](
+            robot_future, initial_state)
         state = unpack_RNN_state(state)
         state = F.dropout(state,
-                          p=1. - self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
+                          p=1. -
+                          self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
                           training=(mode == ModeKeys.TRAIN))
 
         return state
@@ -774,10 +825,14 @@ class MultimodalGenerativeCVAE(object):
             - log_sigmas: Standard Deviation (logarithm) of each GMM component. [N, D]
             - corrs: Correlation between the GMM components. [N]
         """
-        log_pis = self.node_modules[self.node_type + '/decoder/proj_to_GMM_log_pis'](tensor)
-        mus = self.node_modules[self.node_type + '/decoder/proj_to_GMM_mus'](tensor)
-        log_sigmas = self.node_modules[self.node_type + '/decoder/proj_to_GMM_log_sigmas'](tensor)
-        corrs = torch.tanh(self.node_modules[self.node_type + '/decoder/proj_to_GMM_corrs'](tensor))
+        log_pis = self.node_modules[self.node_type +
+                                    '/decoder/proj_to_GMM_log_pis'](tensor)
+        mus = self.node_modules[self.node_type +
+                                '/decoder/proj_to_GMM_mus'](tensor)
+        log_sigmas = self.node_modules[self.node_type +
+                                       '/decoder/proj_to_GMM_log_sigmas'](tensor)
+        corrs = torch.tanh(
+            self.node_modules[self.node_type + '/decoder/proj_to_GMM_corrs'](tensor))
         return log_pis, mus, log_sigmas, corrs
 
     def p_y_xz(self, mode, x, x_nr_t, y_r, n_s_t0, z_stacked, prediction_horizon,
@@ -805,14 +860,16 @@ class MultimodalGenerativeCVAE(object):
         zx = torch.cat([z, x.repeat(num_samples * num_components, 1)], dim=1)
 
         cell = self.node_modules[self.node_type + '/decoder/rnn_cell']
-        initial_h_model = self.node_modules[self.node_type + '/decoder/initial_h']
+        initial_h_model = self.node_modules[self.node_type +
+                                            '/decoder/initial_h']
 
         initial_state = initial_h_model(zx)
 
         log_pis, mus, log_sigmas, corrs, a_sample = [], [], [], [], []
 
         # Infer initial action state for node from current state
-        a_0 = self.node_modules[self.node_type + '/decoder/state_action'](n_s_t0)
+        a_0 = self.node_modules[self.node_type +
+                                '/decoder/state_action'](n_s_t0)
 
         state = initial_state
         if self.hyperparams['incl_robot_node']:
@@ -820,13 +877,16 @@ class MultimodalGenerativeCVAE(object):
                                 a_0.repeat(num_samples*num_components, 1),
                                 x_nr_t.repeat(num_samples*num_components, 1)], dim=1)
         else:
-            input_ = torch.cat([zx, a_0.repeat(num_samples*num_components, 1)], dim=1)
+            input_ = torch.cat(
+                [zx, a_0.repeat(num_samples*num_components, 1)], dim=1)
 
         for j in range(ph):
             h_state = cell(input_, state)
-            log_pi_t, mu_t, log_sigma_t, corr_t = self.project_to_GMM_params(h_state)
+            log_pi_t, mu_t, log_sigma_t, corr_t = self.project_to_GMM_params(
+                h_state)
 
-            gmm = GMM2D(log_pi_t, mu_t, log_sigma_t, corr_t)  # [k;bs, pred_dim]
+            gmm = GMM2D(log_pi_t, mu_t, log_sigma_t,
+                        corr_t)  # [k;bs, pred_dim]
 
             if mode == ModeKeys.PREDICT and gmm_mode:
                 a_t = gmm.mode()
@@ -835,12 +895,15 @@ class MultimodalGenerativeCVAE(object):
 
             if num_components > 1:
                 if mode == ModeKeys.PREDICT:
-                    log_pis.append(self.latent.p_dist.logits.repeat(num_samples, 1, 1))
+                    log_pis.append(
+                        self.latent.p_dist.logits.repeat(num_samples, 1, 1))
                 else:
-                    log_pis.append(self.latent.q_dist.logits.repeat(num_samples, 1, 1))
+                    log_pis.append(
+                        self.latent.q_dist.logits.repeat(num_samples, 1, 1))
             else:
                 log_pis.append(
-                    torch.ones_like(corr_t.reshape(num_samples, num_components, -1).permute(0, 2, 1).reshape(-1, 1))
+                    torch.ones_like(corr_t.reshape(
+                        num_samples, num_components, -1).permute(0, 2, 1).reshape(-1, 1))
                 )
 
             mus.append(
@@ -858,7 +921,8 @@ class MultimodalGenerativeCVAE(object):
                 ).permute(0, 2, 1).reshape(-1, num_components))
 
             if self.hyperparams['incl_robot_node']:
-                dec_inputs = [zx, a_t, y_r[:, j].repeat(num_samples * num_components, 1)]
+                dec_inputs = [zx, a_t, y_r[:, j].repeat(
+                    num_samples * num_components, 1)]
             else:
                 dec_inputs = [zx, a_t]
             input_ = torch.cat(dec_inputs, dim=1)
@@ -870,8 +934,10 @@ class MultimodalGenerativeCVAE(object):
         corrs = torch.stack(corrs, dim=1)
 
         a_dist = GMM2D(torch.reshape(log_pis, [num_samples, -1, ph, num_components]),
-                       torch.reshape(mus, [num_samples, -1, ph, num_components * pred_dim]),
-                       torch.reshape(log_sigmas, [num_samples, -1, ph, num_components * pred_dim]),
+                       torch.reshape(
+                           mus, [num_samples, -1, ph, num_components * pred_dim]),
+                       torch.reshape(
+                           log_sigmas, [num_samples, -1, ph, num_components * pred_dim]),
                        torch.reshape(corrs, [num_samples, -1, ph, num_components]))
 
         if self.hyperparams['dynamic'][self.node_type]['distribution']:
@@ -909,7 +975,8 @@ class MultimodalGenerativeCVAE(object):
         elif mode == ModeKeys.PREDICT:
             sample_ct = num_samples
             if num_samples is None:
-                raise ValueError("num_samples cannot be None with mode == PREDICT.")
+                raise ValueError(
+                    "num_samples cannot be None with mode == PREDICT.")
 
         self.latent.q_dist = self.q_z_xy(mode, x, y_e)
         self.latent.p_dist = self.p_z_x(mode, x)
@@ -917,9 +984,11 @@ class MultimodalGenerativeCVAE(object):
         z = self.latent.sample_q(sample_ct, mode)
 
         if mode == ModeKeys.TRAIN:
-            kl_obj = self.latent.kl_q_p(self.log_writer, '%s' % str(self.node_type), self.curr_iter)
+            kl_obj = self.latent.kl_q_p(
+                self.log_writer, '%s' % str(self.node_type), self.curr_iter)
             if self.log_writer is not None:
-                self.log_writer.add_scalar('%s/%s' % (str(self.node_type), 'kl'), kl_obj, self.curr_iter)
+                self.log_writer.add_scalar(
+                    '%s/%s' % (str(self.node_type), 'kl'), kl_obj, self.curr_iter)
         else:
             kl_obj = None
 
@@ -945,9 +1014,11 @@ class MultimodalGenerativeCVAE(object):
         num_components = self.hyperparams['N'] * self.hyperparams['K']
         y_dist = self.p_y_xz(mode, x, x_nr_t, y_r, n_s_t0, z,
                              prediction_horizon, num_samples, num_components=num_components)
-        log_p_yt_xz = torch.clamp(y_dist.log_prob(labels), max=self.hyperparams['log_p_yt_xz_max'])
+        log_p_yt_xz = torch.clamp(y_dist.log_prob(
+            labels), max=self.hyperparams['log_p_yt_xz_max'])
         if self.hyperparams['log_histograms'] and self.log_writer is not None:
-            self.log_writer.add_histogram('%s/%s' % (str(self.node_type), 'log_p_yt_xz'), log_p_yt_xz, self.curr_iter)
+            self.log_writer.add_histogram(
+                '%s/%s' % (str(self.node_type), 'log_p_yt_xz'), log_p_yt_xz, self.curr_iter)
 
         log_p_y_xz = torch.sum(log_p_yt_xz, dim=2)
         return log_p_y_xz
@@ -994,7 +1065,7 @@ class MultimodalGenerativeCVAE(object):
 
         z, kl = self.encoder(mode, x, y_e)
         log_p_y_xz = self.decoder(mode, x, x_nr_t, y, y_r, n_s_t0, z,
-                                  labels, # Loss is calculated on unstandardized label
+                                  labels,  # Loss is calculated on unstandardized label
                                   prediction_horizon,
                                   self.hyperparams['k'])
 
@@ -1026,7 +1097,8 @@ class MultimodalGenerativeCVAE(object):
                                        loss,
                                        self.curr_iter)
             if self.hyperparams['log_histograms']:
-                self.latent.summarize_for_tensorboard(self.log_writer, str(self.node_type), self.curr_iter)
+                self.latent.summarize_for_tensorboard(
+                    self.log_writer, str(self.node_type), self.curr_iter)
         return loss
 
     def eval_loss(self,
@@ -1071,13 +1143,14 @@ class MultimodalGenerativeCVAE(object):
                                                                      map=map)
 
         num_components = self.hyperparams['N'] * self.hyperparams['K']
-        ### Importance sampled NLL estimate
+        # Importance sampled NLL estimate
         z, _ = self.encoder(mode, x, y_e)  # [k_eval, nbs, N*K]
         z = self.latent.sample_p(1, mode, full_dist=True)
         y_dist, _ = self.p_y_xz(ModeKeys.PREDICT, x, x_nr_t, y_r, n_s_t0, z,
                                 prediction_horizon, num_samples=1, num_components=num_components)
         # We use unstandardized labels to compute the loss
-        log_p_yt_xz = torch.clamp(y_dist.log_prob(labels), max=self.hyperparams['log_p_yt_xz_max'])
+        log_p_yt_xz = torch.clamp(y_dist.log_prob(
+            labels), max=self.hyperparams['log_p_yt_xz_max'])
         log_p_y_xz = torch.sum(log_p_yt_xz, dim=2)
         log_p_y_xz_mean = torch.mean(log_p_y_xz, dim=0)  # [nbs]
         log_likelihood = torch.mean(log_p_y_xz_mean)

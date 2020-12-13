@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from model.mgcvae import MultimodalGenerativeCVAE
+from model.multi_hyp import MultiHypothesisNet
 from model.dataset import get_timesteps_data, restore
 
 
@@ -41,31 +42,32 @@ class Trajectron(object):
         for node_type in env.NodeType:
             # Only add a Model for NodeTypes we want to predict
             if node_type in self.pred_state.keys():
-                self.node_models_dict[node_type] = MultimodalGenerativeCVAE(env,
-                                                                            node_type,
-                                                                            self.model_registrar,
-                                                                            self.hyperparams,
-                                                                            self.device,
-                                                                            edge_types,
-                                                                            log_writer=self.log_writer)
+                self.node_models_dict[node_type] = MultiHypothesisNet(env,
+                                                                      node_type,
+                                                                      self.model_registrar,
+                                                                      self.hyperparams,
+                                                                      self.device,
+                                                                      edge_types,
+                                                                      log_writer=self.log_writer)
 
     def set_curr_iter(self, curr_iter):
         self.curr_iter = curr_iter
         for node_str, model in self.node_models_dict.items():
             model.set_curr_iter(curr_iter)
 
-    def set_annealing_params(self):
-        for node_str, model in self.node_models_dict.items():
-            model.set_annealing_params()
+#     def set_annealing_params(self):
+#         for node_str, model in self.node_models_dict.items():
+#             model.set_annealing_params()
 
-    def step_annealers(self, node_type=None):
-        if node_type is None:
-            for node_type in self.node_models_dict:
-                self.node_models_dict[node_type].step_annealers()
-        else:
-            self.node_models_dict[node_type].step_annealers()
+#     def step_annealers(self, node_type=None):
+#         if node_type is None:
+#             for node_type in self.node_models_dict:
+#                 self.node_models_dict[node_type].step_annealers()
+#         else:
+#             self.node_models_dict[node_type].step_annealers()
 
-    def train_loss(self, batch, node_type):
+    def train_loss(self, batch, node_type, top_n=8):
+        # TODO DATA explained here
         (first_history_index,
          x_t, y_t, x_st_t, y_st_t,
          neighbors_data_st,
@@ -94,7 +96,8 @@ class Trajectron(object):
                                     neighbors_edge_value),
                                 robot=robot_traj_st_t,
                                 map=map,
-                                prediction_horizon=self.ph)
+                                prediction_horizon=self.ph,
+                                top_n=top_n)
 
         return loss
 
