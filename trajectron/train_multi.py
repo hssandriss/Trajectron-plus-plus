@@ -251,10 +251,11 @@ def main():
         node_type: 0 for node_type in train_data_loader.keys()}
     top_n = hyperparams['num_hyp']
     for epoch in range(1, args.train_epochs + 1):
-        if epoch > 20 and epoch % 5 == 0:
+        if epoch > 50 and epoch % 20 == 0:
             top_n = max(top_n//2, 1)
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
+        loss_epoch = []
         for node_type, data_loader in train_data_loader.items():
             curr_iter = curr_iter_node_type[node_type]
             pbar = tqdm(data_loader, ncols=80)
@@ -266,8 +267,7 @@ def main():
                     batch, node_type, top_n=top_n)
                 pbar.set_description(
                     f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
-                train_loss_df = train_loss_df.append(pd.DataFrame(data=[[epoch, train_loss.item()]], columns=[
-                    'epoch', 'loss']), ignore_index=True)
+                loss_epoch.append(train_loss.item()/top_n)
                 train_loss.backward()
                 # Clipping gradients.
                 if hyperparams['grad_clip'] is not None:
@@ -278,16 +278,19 @@ def main():
                 # Stepping forward the learning rate scheduler and annealers.
                 lr_scheduler[node_type].step()
 
-                if not args.debug:
-                    log_writer.add_scalar(f"{node_type}/train/learning_rate",
-                                          lr_scheduler[node_type].get_lr()[0],
-                                          curr_iter)
-                    log_writer.add_scalar(
-                        f"{node_type}/train/loss", train_loss, curr_iter)
-
                 curr_iter += 1
+
+            if not args.debug:
+                log_writer.add_scalar(f"{node_type}/train/learning_rate",
+                                      lr_scheduler[node_type].get_lr()[0],
+                                      epoch)
+                log_writer.add_scalar(
+                    f"{node_type}/train/loss", np.mean(loss_epoch), epoch)
             curr_iter_node_type[node_type] = curr_iter
+            train_loss_df = train_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(loss_epoch)]], columns=[
+                'epoch', 'loss']), ignore_index=True)
         train_dataset.augment = False
+
         if args.eval_every is not None or args.vis_every is not None:
             eval_trajectron.set_curr_iter(epoch)
 
@@ -386,16 +389,19 @@ def main():
                     print(
                         f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
                     pbar = tqdm(data_loader, ncols=80)
+                    loss_epoch = []
                     for batch in pbar:
                         eval_loss_node_type = eval_trajectron.eval_loss(
                             batch, node_type)
                         pbar.set_description(
                             f"Epoch {epoch}, {node_type} L: {eval_loss_node_type.item():.2f}")
-                        eval_loss_df = eval_loss_df.append(pd.DataFrame(
-                            [[epoch, eval_loss_node_type.item()]], columns=['epoch', 'loss']), ignore_index=True)
+                        loss_epoch.append(eval_loss_node_type.item())
+
                         eval_loss.append(
-                            {node_type: {'nll': [eval_loss_node_type]}})
+                            {node_type: {'wta': [eval_loss_node_type]}})
                         del batch
+                    eval_loss_df = eval_loss_df.append(pd.DataFrame(
+                        [[epoch, np.mean(loss_epoch)]], columns=['epoch', 'loss']), ignore_index=True)
 
                     evaluation.log_batch_errors(eval_loss,
                                                 log_writer,
