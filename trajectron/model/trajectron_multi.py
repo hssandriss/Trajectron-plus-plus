@@ -191,17 +191,14 @@ class Trajectron(object):
                                         all_z_sep=all_z_sep)
 
             predictions_np = predictions.cpu().detach().numpy() #[bs, num_hyp, horizon, 2]
+            # predictions in trajectron  should be: [num_hyp, bs, horizon, 2]
+            predictions_np = np.transpose(predictions_np, (1,0,2,3))
 
             # Assign predictions to node
             for i, ts in enumerate(timesteps_o):
-                #import pdb; pdb.set_trace()
                 if ts not in predictions_dict.keys():
                     predictions_dict[ts] = dict()
-                print('i ', i)
-                print('predictions_np.shape: ', predictions_np.shape)
-                print('predictions_np[:, [i]].shape: ', predictions_np[:, [i]].shape)
                 predictions_dict[ts][nodes[i]] = np.transpose(
                     predictions_np[:, [i]], (1, 0, 2, 3))
-                print('predictions_dict[ts][nodes[i]]: ', predictions_dict[ts][nodes[i]].shape)
                     
         return predictions_dict
