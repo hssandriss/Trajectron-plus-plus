@@ -160,18 +160,19 @@ class MultiHypothesisNet(object):
         ####################
         #   Decoder LSTM   #
         ####################
-        if self.hyperparams['incl_robot_node']:
-            decoder_input_dims = self.pred_state_length + self.robot_state_length + z_size
-        else:
-            decoder_input_dims = self.pred_state_length + z_size
-
         num_hyp = self.hyperparams['num_hyp']*2
+
+        if self.hyperparams['incl_robot_node']:
+            decoder_input_dims = num_hyp + self.robot_state_length + z_size
+        else:
+            decoder_input_dims = num_hyp + z_size
+
         self.add_submodule(self.node_type + '/decoder/rnn_cell',
                            model_if_absent=nn.GRUCell(decoder_input_dims, num_hyp))
         self.add_submodule(self.node_type + '/decoder/initial_h',
                            model_if_absent=nn.Linear(z_size, num_hyp))
         self.add_submodule(self.node_type + '/decoder/initial_mu',
-                           model_if_absent=nn.Linear(self.state_length, self.pred_state_length))
+                           model_if_absent=nn.Linear(self.state_length, num_hyp))
 
         self.x_size = x_size
         self.z_size = z_size
@@ -703,7 +704,7 @@ class MultiHypothesisNet(object):
                                              '/decoder/initial_mu']
 
         initial_h = initial_h_model(z)
-        initial_mu = initial_mu_model(n_s_t0)
+        initial_mu = initial_mu_model(n_s_t0) # [bs, num_hyp *2]
 
         if self.hyperparams['incl_robot_node']:
             input_ = torch.cat([z, initial_mu, x_nr_t], dim=1)
@@ -713,23 +714,23 @@ class MultiHypothesisNet(object):
         h = initial_h
         mus = []
         for t in range(horizon):
-            h_state = cell(input_, h)
+            h_state = cell(input_, h) # [bs, num_hyp *2]
             mu_x = h_state[:, self.hyperparams['num_hyp']:]
             mu_y = h_state[:, :self.hyperparams['num_hyp']]
             pred_mu = torch.stack([mu_x, mu_y], axis=2)
             # TODO verify that the shape structure for dynamics is correct
-            pred_mu = self.dynamic.integrate_samples(pred_mu, x)
+            pred_mu = self.dynamic.integrate_samples(pred_mu, x) # [bs,num_hyp, 2]
             mus.append(pred_mu)
-            gt = y[:, t, :]
-            mu = self.closest_mu(pred_mu, gt).detach()
+            '''if we want h state as dynamics to feed next input [z, mu_dyn]
+            mu_x_dyn, mu_y_dyn = torch.unbind(pred_mu, dim = 2)
+            mu_dyn = torch.cat([mu_x_dyn, mu_y_dyn], axis=1) # [bs, num_hyp*2]'''
             if self.hyperparams['incl_robot_node']:
-                input_ = torch.cat([z, mu, x_nr_t], dim=1)
+                input_ = torch.cat([z, h_state, x_nr_t], dim=1)
             else:
-                input_ = torch.cat([z, mu], dim=1)
+                input_ = torch.cat([z, h_state], dim=1)
             h = h_state
-        hypotheses = torch.stack(mus, dim=1)
-        # [bs, horizon, num_hyp, 2]
-        return hypotheses
+        hypothesis = torch.stack(mus, dim=2) 
+        return hypothesis #[bs, num_hyp, horizon, 2]
 
     def closest_mu(self, mus, gt):
         gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'], 1)
@@ -746,35 +747,36 @@ class MultiHypothesisNet(object):
         """
         Calculates the WTA Loss
         :param gt [bs, horizon, 2]
-        :param hyp [bs, horizon, n_hyp, 2]
+        :param hyp [bs, n_hyp, horizon, 2]
         """
         eps = 0.001
-        # gt -> [bs, horizon, num_hyp, 2]
-        gt = gt.unsqueeze(2).repeat(1, 1, self.hyperparams['num_hyp'], 1)
-        dist = torch.sum((hyp - gt)**2, dim=3)  # [bs, horizon, num_hyp]
-        dist = torch.sqrt(dist + eps)  # [bs, horizon, num_hyp]
-        min_loss, _ = torch.min(dist, dim=2)  # [bs, horizon]
-        losses = min_loss.mean()  # mean over bs and horizon
+        # gt -> [bs, num_hyp, horizon, 2]
+        gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'],1, 1)
+        dist = torch.sum((hyp - gt)**2, dim=3)  # [bs, num_hyp, horizon]
+        dist = torch.sqrt(dist + eps)  # [bs, num_hyp, horizon]
+        min_loss, _ = torch.min(dist, dim=1)  # [bs, horizon]
+        # sum over horizon and mean over batch
+        losses = torch.sum (min_loss, dim = 1).mean(dim = 0)  
         return losses
 
     def ewta(self, gt, hyp, top_n=8):
         """
         Calculates the Evolved WTA Loss
         :param gt [bs, horizon, 2]
-        :param hyp [bs, horizon, n_hyp, 2]
+        :param hyp [bs, n_hyp, horizon, 2]
         :param top_n initially num hyp (according to the paper)
         """
         sum_losses = 0.0
         eps = 0.001
-        # gt -> [bs, horizon, num_hyp, 2]
-        gt = gt.unsqueeze(2).repeat(1, 1, self.hyperparams['num_hyp'], 1)
-        dist = torch.sum((hyp - gt)**2, dim=3)  # [bs, horizon, num_hyp]
-        dist = torch.sqrt(dist + eps)  # [bs, horizon, num_hyp]
-        min_loss, _ = torch.topk(
-            dist, k=top_n, dim=2, largest=False, sorted=True)
-        # min_loss => [bs, horizon, top_hyp]
+        # gt -> [bs, num_hyp, horizon, 2]
+        gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'],1, 1)
+        dist = torch.sum((hyp - gt)**2, dim=3) # [bs, num_hyp, horizon]
+        dist = torch.sqrt(dist + eps)
+        min_loss, _ = torch.topk (dist, k=top_n, dim=1, largest=False, sorted=True) #[bs, top_k, horizon]
         for i in range(top_n):
-            losses = min_loss[:, :, i].mean()
+            # sum over the horizon of the trajectory of ith hyp
+            losses = torch.sum (min_loss[:,i,:], dim = 1) 
+            losses = losses.mean(dim = 0)
             sum_losses += losses
         return sum_losses
 
@@ -900,8 +902,7 @@ class MultiHypothesisNet(object):
         :return:
         """
         mode = ModeKeys.PREDICT
-
-        x, y = self.obtain_encoded_tensors(mode=mode,
+        x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
                                            inputs=inputs,
                                            inputs_st=inputs_st,
                                            labels=None,
@@ -911,5 +912,7 @@ class MultiHypothesisNet(object):
                                            neighbors_edge_value=neighbors_edge_value,
                                            robot=robot,
                                            map=map)
+        z = self.encoder(x)
+        y_predicted = self.decoder(z, x, n_s_t0, x_nr_t, y,  prediction_horizon)
 
-        return output
+        return y_predicted

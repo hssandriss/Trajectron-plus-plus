@@ -97,7 +97,7 @@ def main():
     if not args.debug:
         # Create the log and model directiory if they're not present.
         model_dir = os.path.join(args.log_dir,
-                                 'models_' + time.strftime('%d_%b_%Y_%H_%M_%S', time.localtime()) + args.log_tag)
+                                 'models_Multi_hyp' + time.strftime('%d_%b_%Y_%H_%M_%S', time.localtime()) + args.log_tag)
         pathlib.Path(model_dir).mkdir(parents=True, exist_ok=True)
 
         # Save config to model directory
@@ -387,7 +387,7 @@ def main():
                 for node_type, data_loader in eval_data_loader.items():
                     eval_loss = []
                     print(
-                        f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
+                        f"Starting Multi Hyp Evaluation @ epoch {epoch} for node type: {node_type}")
                     pbar = tqdm(data_loader, ncols=80)
                     loss_epoch = []
                     for batch in pbar:
