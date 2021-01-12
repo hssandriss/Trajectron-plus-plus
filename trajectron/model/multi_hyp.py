@@ -160,23 +160,27 @@ class MultiHypothesisNet(object):
         ####################
         #   Decoder LSTM   #
         ####################
-        num_hyp = self.hyperparams['num_hyp']*2
 
         if self.hyperparams['incl_robot_node']:
-            decoder_input_dims = num_hyp + self.robot_state_length + z_size
+            decoder_input_dims = self.hyperparams['num_hyp'] * \
+                self.pred_state_length + self.robot_state_length + z_size
         else:
-            decoder_input_dims = num_hyp + z_size
+            decoder_input_dims = self.hyperparams['num_hyp'] * \
+                self.pred_state_length + z_size
 
         self.add_submodule(self.node_type + '/decoder/rnn_cell',
-                           model_if_absent=nn.GRUCell(decoder_input_dims, num_hyp))
+                           model_if_absent=nn.GRUCell(decoder_input_dims, self.hyperparams['dec_rnn_dim']))
         self.add_submodule(self.node_type + '/decoder/initial_h',
-                           model_if_absent=nn.Linear(z_size, num_hyp))
+                           model_if_absent=nn.Linear(z_size, self.hyperparams['dec_rnn_dim']))
         self.add_submodule(self.node_type + '/decoder/initial_mu',
-                           model_if_absent=nn.Linear(self.state_length, num_hyp))
+                           model_if_absent=nn.Linear(self.state_length, self.pred_state_length))
+
+        self.add_submodule(self.node_type + '/decoder/proj_to_mus',
+                           model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
+                                                     self.hyperparams['num_hyp'] * self.pred_state_length))
 
         self.x_size = x_size
         self.z_size = z_size
-        self.num_hyp = num_hyp
 
     def create_edge_models(self, edge_types):
         for edge_type in edge_types:
@@ -702,9 +706,10 @@ class MultiHypothesisNet(object):
                                             '/decoder/initial_h']
         initial_mu_model = self.node_modules[self.node_type +
                                              '/decoder/initial_mu']
-
+        project_to_mus = self.node_modules[self.node_type +
+                                           '/decoder/proj_to_mus']
         initial_h = initial_h_model(z)
-        initial_mu = initial_mu_model(n_s_t0) # [bs, num_hyp *2]
+        initial_mu = initial_mu_model(n_s_t0).repeat(1, 20)  # [bs, num_hyp *2]
 
         if self.hyperparams['incl_robot_node']:
             input_ = torch.cat([z, initial_mu, x_nr_t], dim=1)
@@ -714,23 +719,22 @@ class MultiHypothesisNet(object):
         h = initial_h
         mus = []
         for t in range(horizon):
-            h_state = cell(input_, h) # [bs, num_hyp *2]
-            mu_x = h_state[:, self.hyperparams['num_hyp']:]
-            mu_y = h_state[:, :self.hyperparams['num_hyp']]
-            pred_mu = torch.stack([mu_x, mu_y], axis=2)
+            h_state = cell(input_, h)  # [bs, rnn_hidden_shape]
+            raw_mus = project_to_mus(h_state)
+            mu_x = raw_mus[:, self.hyperparams['num_hyp']:]
+            mu_y = raw_mus[:, :self.hyperparams['num_hyp']]
+            pred_mu = torch.stack([mu_x, mu_y], axis=2)  # # [bs,num_hyp, 2]
             # TODO verify that the shape structure for dynamics is correct
-            pred_mu = self.dynamic.integrate_samples(pred_mu, x) # [bs,num_hyp, 2]
             mus.append(pred_mu)
-            '''if we want h state as dynamics to feed next input [z, mu_dyn]
-            mu_x_dyn, mu_y_dyn = torch.unbind(pred_mu, dim = 2)
-            mu_dyn = torch.cat([mu_x_dyn, mu_y_dyn], axis=1) # [bs, num_hyp*2]'''
             if self.hyperparams['incl_robot_node']:
-                input_ = torch.cat([z, h_state, x_nr_t], dim=1)
+                input_ = torch.cat([z, raw_mus, x_nr_t], dim=1)
             else:
-                input_ = torch.cat([z, h_state], dim=1)
+                input_ = torch.cat([z, raw_mus], dim=1)
             h = h_state
-        hypothesis = torch.stack(mus, dim=2) 
-        return hypothesis #[bs, num_hyp, horizon, 2]
+        hypothesis = torch.stack(mus, dim=2)  # [bs, num_hyp, horizon, 2]
+        hypothesis = self.dynamic.integrate_samples(
+            hypothesis, x)  # [bs, num_hyp, horizon, 2]
+        return hypothesis
 
     def closest_mu(self, mus, gt):
         gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'], 1)
@@ -751,12 +755,12 @@ class MultiHypothesisNet(object):
         """
         eps = 0.001
         # gt -> [bs, num_hyp, horizon, 2]
-        gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'],1, 1)
+        gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'], 1, 1)
         dist = torch.sum((hyp - gt)**2, dim=3)  # [bs, num_hyp, horizon]
         dist = torch.sqrt(dist + eps)  # [bs, num_hyp, horizon]
         min_loss, _ = torch.min(dist, dim=1)  # [bs, horizon]
         # sum over horizon and mean over batch
-        losses = torch.sum (min_loss, dim = 1).mean(dim = 0)  
+        losses = torch.sum(min_loss, dim=1).mean(dim=0)
         return losses
 
     def ewta(self, gt, hyp, top_n=8):
@@ -769,14 +773,16 @@ class MultiHypothesisNet(object):
         sum_losses = 0.0
         eps = 0.001
         # gt -> [bs, num_hyp, horizon, 2]
-        gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'],1, 1)
-        dist = torch.sum((hyp - gt)**2, dim=3) # [bs, num_hyp, horizon]
+        gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'], 1, 1)
+        dist = torch.sum((hyp - gt)**2, dim=3)  # [bs, num_hyp, horizon]
         dist = torch.sqrt(dist + eps)
-        min_loss, _ = torch.topk (dist, k=top_n, dim=1, largest=False, sorted=True) #[bs, top_k, horizon]
+        # [bs, top_k, horizon]
+        min_loss, _ = torch.topk(dist, k=top_n, dim=1,
+                                 largest=False, sorted=True)
         for i in range(top_n):
             # sum over the horizon of the trajectory of ith hyp
-            losses = torch.sum (min_loss[:,i,:], dim = 1) 
-            losses = losses.mean(dim = 0)
+            losses = torch.sum(min_loss[:, i, :], dim=1)
+            losses = losses.mean(dim=0)
             sum_losses += losses
         return sum_losses
 
@@ -903,16 +909,17 @@ class MultiHypothesisNet(object):
         """
         mode = ModeKeys.PREDICT
         x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
-                                           inputs=inputs,
-                                           inputs_st=inputs_st,
-                                           labels=None,
-                                           labels_st=None,
-                                           first_history_indices=first_history_indices,
-                                           neighbors=neighbors,
-                                           neighbors_edge_value=neighbors_edge_value,
-                                           robot=robot,
-                                           map=map)
+                                                                     inputs=inputs,
+                                                                     inputs_st=inputs_st,
+                                                                     labels=None,
+                                                                     labels_st=None,
+                                                                     first_history_indices=first_history_indices,
+                                                                     neighbors=neighbors,
+                                                                     neighbors_edge_value=neighbors_edge_value,
+                                                                     robot=robot,
+                                                                     map=map)
         z = self.encoder(x)
-        y_predicted = self.decoder(z, x, n_s_t0, x_nr_t, y,  prediction_horizon)
+        y_predicted = self.decoder(
+            z, x, n_s_t0, x_nr_t, y,  prediction_horizon)
 
         return y_predicted
