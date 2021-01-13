@@ -723,8 +723,7 @@ class MultiHypothesisNet(object):
             raw_mus = project_to_mus(h_state)
             mu_x = raw_mus[:, self.hyperparams['num_hyp']:]
             mu_y = raw_mus[:, :self.hyperparams['num_hyp']]
-            pred_mu = torch.stack([mu_x, mu_y], axis=2)  # # [bs,num_hyp, 2]
-            # TODO verify that the shape structure for dynamics is correct
+            pred_mu = torch.stack([mu_x, mu_y], axis=2)  # [bs,num_hyp, 2]
             mus.append(pred_mu)
             if self.hyperparams['incl_robot_node']:
                 input_ = torch.cat([z, raw_mus, x_nr_t], dim=1)
@@ -732,8 +731,7 @@ class MultiHypothesisNet(object):
                 input_ = torch.cat([z, raw_mus], dim=1)
             h = h_state
         hypothesis = torch.stack(mus, dim=2)  # [bs, num_hyp, horizon, 2]
-        hypothesis = self.dynamic.integrate_samples(
-            hypothesis, x)  # [bs, num_hyp, horizon, 2]
+        hypothesis = self.dynamic.integrate_samples(hypothesis, x)  # [bs, num_hyp, horizon, 2]
         return hypothesis
 
     def closest_mu(self, mus, gt):

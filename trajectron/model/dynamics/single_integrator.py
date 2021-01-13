@@ -18,7 +18,7 @@ class SingleIntegrator(Dynamic):
         :param x: Not used for SI.
         :return: Position samples
         """
-        p_0 = self.initial_conditions['pos'].unsqueeze(1)
+        p_0 = self.initial_conditions['pos'].unsqueeze(1).unsqueeze(1)  # Last unsqueeze to match v
         return torch.cumsum(v, dim=2) * self.dt + p_0
 
     def integrate_distribution(self, v_dist, x=None):
