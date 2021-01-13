@@ -685,7 +685,7 @@ class MultiHypothesisNet(object):
         z = self.node_modules[self.node_type + '/EncoderFC'](x)
         return z
 
-    def decoder(self, z, x, n_s_t0, x_nr_t, y, horizon):
+    def decoder(self, z, n_s_t0, x_nr_t, horizon):
         """
         Decoder: produces the hypotheses
         :param h: hidden representation
@@ -702,12 +702,9 @@ class MultiHypothesisNet(object):
         """
 
         cell = self.node_modules[self.node_type + '/decoder/rnn_cell']
-        initial_h_model = self.node_modules[self.node_type +
-                                            '/decoder/initial_h']
-        initial_mu_model = self.node_modules[self.node_type +
-                                             '/decoder/initial_mu']
-        project_to_mus = self.node_modules[self.node_type +
-                                           '/decoder/proj_to_mus']
+        initial_h_model = self.node_modules[self.node_type + '/decoder/initial_h']
+        initial_mu_model = self.node_modules[self.node_type + '/decoder/initial_mu']
+        project_to_mus = self.node_modules[self.node_type + '/decoder/proj_to_mus']
         initial_h = initial_h_model(z)
         initial_mu = initial_mu_model(n_s_t0).repeat(1, 20)  # [bs, num_hyp *2]
 
@@ -731,7 +728,7 @@ class MultiHypothesisNet(object):
                 input_ = torch.cat([z, raw_mus], dim=1)
             h = h_state
         hypothesis = torch.stack(mus, dim=2)  # [bs, num_hyp, horizon, 2]
-        hypothesis = self.dynamic.integrate_samples(hypothesis, x)  # [bs, num_hyp, horizon, 2]
+        hypothesis = self.dynamic.integrate_samples(hypothesis, None)  # [bs, num_hyp, horizon, 2]
         return hypothesis
 
     def closest_mu(self, mus, gt):
@@ -775,8 +772,7 @@ class MultiHypothesisNet(object):
         dist = torch.sum((hyp - gt)**2, dim=3)  # [bs, num_hyp, horizon]
         dist = torch.sqrt(dist + eps)
         # [bs, top_k, horizon]
-        min_loss, _ = torch.topk(dist, k=top_n, dim=1,
-                                 largest=False, sorted=True)
+        min_loss, _ = torch.topk(dist, k=top_n, dim=1, largest=False, sorted=True)
         for i in range(top_n):
             # sum over the horizon of the trajectory of ith hyp
             losses = torch.sum(min_loss[:, i, :], dim=1)
@@ -824,7 +820,7 @@ class MultiHypothesisNet(object):
                                                                      robot=robot,
                                                                      map=map)
         z = self.encoder(x)
-        y_hat = self.decoder(z, x, n_s_t0, x_nr_t, y,  prediction_horizon)
+        y_hat = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
         loss = self.ewta(labels, y_hat, top_n)
         return loss
 
@@ -868,7 +864,7 @@ class MultiHypothesisNet(object):
                                                                      robot=robot,
                                                                      map=map)
         z = self.encoder(x)
-        y_hat = self.decoder(z, x, n_s_t0, x_nr_t, y,  prediction_horizon)
+        y_hat = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
         loss = self.wta(labels, y_hat)
         return loss
 
@@ -917,7 +913,5 @@ class MultiHypothesisNet(object):
                                                                      robot=robot,
                                                                      map=map)
         z = self.encoder(x)
-        y_predicted = self.decoder(
-            z, x, n_s_t0, x_nr_t, y,  prediction_horizon)
-
+        y_predicted = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
         return y_predicted
