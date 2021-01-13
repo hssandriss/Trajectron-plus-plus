@@ -683,6 +683,7 @@ class MultiHypothesisNet(object):
         :param Input / Condition tensor.
         """
         z = self.node_modules[self.node_type + '/EncoderFC'](x)
+        #return x
         return z
 
     def decoder(self, z, n_s_t0, x_nr_t, horizon):
@@ -713,8 +714,10 @@ class MultiHypothesisNet(object):
         else:
             input_ = torch.cat([z, initial_mu], dim=1)
 
+        features = torch.cat([input_, initial_h], dim=1)
         h = initial_h
         mus = []
+        #import pdb; pdb.set_trace()
         for t in range(horizon):
             h_state = cell(input_, h)  # [bs, rnn_hidden_shape]
             raw_mus = project_to_mus(h_state)
@@ -729,7 +732,7 @@ class MultiHypothesisNet(object):
             h = h_state
         hypothesis = torch.stack(mus, dim=2)  # [bs, num_hyp, horizon, 2]
         hypothesis = self.dynamic.integrate_samples(hypothesis, None)  # [bs, num_hyp, horizon, 2]
-        return hypothesis
+        return hypothesis, features
 
     def closest_mu(self, mus, gt):
         gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'], 1)
@@ -820,7 +823,7 @@ class MultiHypothesisNet(object):
                                                                      robot=robot,
                                                                      map=map)
         z = self.encoder(x)
-        y_hat = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
+        y_hat, features = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
         loss = self.ewta(labels, y_hat, top_n)
         return loss
 
@@ -864,7 +867,7 @@ class MultiHypothesisNet(object):
                                                                      robot=robot,
                                                                      map=map)
         z = self.encoder(x)
-        y_hat = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
+        y_hat, features = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
         loss = self.wta(labels, y_hat)
         return loss
 
@@ -913,5 +916,6 @@ class MultiHypothesisNet(object):
                                                                      robot=robot,
                                                                      map=map)
         z = self.encoder(x)
-        y_predicted = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
+        y_predicted, features = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
+
         return y_predicted
