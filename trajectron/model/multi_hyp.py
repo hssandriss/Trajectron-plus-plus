@@ -156,7 +156,7 @@ class MultiHypothesisNet(object):
         z_size = self.hyperparams['Enc_FC_dims']
         self.add_submodule(self.node_type + '/EncoderFC',
                            model_if_absent=nn.Linear(x_size, z_size))
-
+        z_size = x_size
         ####################
         #   Decoder LSTM   #
         ####################
@@ -174,11 +174,9 @@ class MultiHypothesisNet(object):
                            model_if_absent=nn.Linear(z_size, self.hyperparams['dec_rnn_dim']))
         self.add_submodule(self.node_type + '/decoder/initial_mu',
                            model_if_absent=nn.Linear(self.state_length, self.pred_state_length))
-
         self.add_submodule(self.node_type + '/decoder/proj_to_mus',
                            model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
                                                      self.hyperparams['num_hyp'] * self.pred_state_length))
-
         self.x_size = x_size
         self.z_size = z_size
 
@@ -682,9 +680,8 @@ class MultiHypothesisNet(object):
         Encodes: the combined in put into a hidden representation hx
         :param Input / Condition tensor.
         """
-        z = self.node_modules[self.node_type + '/EncoderFC'](x)
-        #return x
-        return z
+        # z = self.node_modules[self.node_type + '/EncoderFC'](x)
+        return x
 
     def decoder(self, z, n_s_t0, x_nr_t, horizon):
         """
