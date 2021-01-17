@@ -914,5 +914,4 @@ class MultiHypothesisNet(object):
                                                                      map=map)
         z = self.encoder(x)
         y_predicted, features = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
-
-        return y_predicted
+        return y_predicted, features

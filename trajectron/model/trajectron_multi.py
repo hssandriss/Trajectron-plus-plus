@@ -147,6 +147,7 @@ class Trajectron(object):
                 all_z_sep=False):
 
         predictions_dict = {}
+        features_list = []
         for node_type in self.env.NodeType:
             if node_type not in self.pred_state:
                 continue
@@ -176,7 +177,7 @@ class Trajectron(object):
                 map = map.to(self.device)
 
             # Run forward pass
-            predictions = model.predict(inputs=x,
+            predictions, features = model.predict(inputs=x,
                                         inputs_st=x_st_t,
                                         first_history_indices=first_history_index,
                                         neighbors=neighbors_data_st,
@@ -189,6 +190,8 @@ class Trajectron(object):
                                         gmm_mode=gmm_mode,
                                         full_dist=full_dist,
                                         all_z_sep=all_z_sep)
+            
+            features_list.append(features)
 
             predictions_np = predictions.cpu().detach().numpy() #[bs, num_hyp, horizon, 2]
             # predictions in trajectron  should be: [num_hyp, bs, horizon, 2]
@@ -200,5 +203,5 @@ class Trajectron(object):
                     predictions_dict[ts] = dict()
                 predictions_dict[ts][nodes[i]] = np.transpose(
                     predictions_np[:, [i]], (1, 0, 2, 3))
-                    
-        return predictions_dict
+
+        return predictions_dict, features_list
