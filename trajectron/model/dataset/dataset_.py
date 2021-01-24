@@ -1,11 +1,15 @@
-from torch.utils import data
+import os
+
+import dill
 import numpy as np
-from .preprocessing import get_node_timestep_data
 import torch
+from torch.utils import data
+
+from .preprocessing import get_node_timestep_data
 
 
-class EnvironmentDataset(object):
-    def __init__(self, env, state, pred_state, node_freq_mult, scene_freq_mult, hyperparams, **kwargs):
+class EnvironmentDatasetKalman(object):
+    def __init__(self, env, scores_path, state, pred_state, node_freq_mult, scene_freq_mult, hyperparams, **kwargs):
         self.env = env
         self.state = state
         self.pred_state = pred_state
@@ -14,11 +18,12 @@ class EnvironmentDataset(object):
         self.max_ft = kwargs['min_future_timesteps']
         self.node_type_datasets = list()
         self._augment = False
+        self.scores_path = scores_path
         for node_type in env.NodeType:
             if node_type not in hyperparams['pred_state']:
                 continue
-            self.node_type_datasets.append(NodeTypeDataset(env, node_type, state, pred_state, node_freq_mult,
-                                                           scene_freq_mult, hyperparams, **kwargs))
+            self.node_type_datasets.append(NodeTypeDatasetKalman(env, scores_path, node_type, state, pred_state, node_freq_mult,
+                                                                 scene_freq_mult, hyperparams, **kwargs))
 
     @property
     def augment(self):
@@ -34,8 +39,8 @@ class EnvironmentDataset(object):
         return iter(self.node_type_datasets)
 
 
-class NodeTypeDataset(data.Dataset):
-    def __init__(self, env, node_type, state, pred_state, node_freq_mult,
+class NodeTypeDatasetKalman(data.Dataset):
+    def __init__(self, env, scores_path, node_type, state, pred_state, node_freq_mult,
                  scene_freq_mult, hyperparams, augment=False, **kwargs):
         self.env = env
         self.state = state
@@ -44,6 +49,7 @@ class NodeTypeDataset(data.Dataset):
         self.max_ht = self.hyperparams['maximum_history_length']
         self.max_ft = kwargs['min_future_timesteps']
 
+        self.scores_path = scores_path
         self.augment = augment
 
         self.node_type = node_type
@@ -61,8 +67,8 @@ class NodeTypeDataset(data.Dataset):
             for t, nodes in present_node_dict.items():
                 for node in nodes:
                     index += [(scene, t, node)] *\
-                             (scene.frequency_multiplier if scene_freq_mult else 1) *\
-                             (node.frequency_multiplier if node_freq_mult else 1)
+                        (scene.frequency_multiplier if scene_freq_mult else 1) *\
+                        (node.frequency_multiplier if node_freq_mult else 1)
                     counter += 1
             # print(counter, scene.timesteps, scene_freq_mult, node_freq_mult)
 
@@ -71,7 +77,7 @@ class NodeTypeDataset(data.Dataset):
     def rebalance(self):
         env_name = self.env.scenes[0].name
         import dill
-        with open('/home/makansio/raid21/Trajectron-EWTA/experiments/pedestrians/%s_kalman.pkl' % env_name, 'rb') as f:
+        with open(os.path.join(self.scores_path, '%s_kalman.pkl' % env_name), 'rb') as f:
             scores = dill.load(f)
             n = scores.shape[0]
             beta = (n - 1) / n
@@ -95,7 +101,7 @@ class NodeTypeDataset(data.Dataset):
     def load_scores(self):
         env_name = self.env.scenes[0].name
         import dill
-        with open('/home/makansio/raid21/Trajectron-EWTA/experiments/pedestrians/%s_kalman.pkl' % env_name, 'rb') as f:
+        with open(os.path.join(self.scores_path, '%s_kalman.pkl' % env_name), 'rb') as f:
             self.scores = dill.load(f)
         # with open('/home/makansio/raid21/Trajectron-EWTA/experiments/pedestrians/%s_deter_multi.pkl' % env_name, 'rb') as f:
         #     self.scores = dill.load(f)
@@ -112,7 +118,7 @@ class NodeTypeDataset(data.Dataset):
             node = scene.get_node_by_id(node.id)
 
         sample = get_node_timestep_data(self.env, scene, t, node, self.state, self.pred_state,
-                                      self.edge_types, self.max_ht, self.max_ft, self.hyperparams) + (self.scores[i], self.balanced_class_weights_all[i],)
+                                        self.edge_types, self.max_ht, self.max_ft, self.hyperparams) + (self.scores[i], self.balanced_class_weights_all[i],)
         # scene = scene.augment()
         # node = scene.get_node_by_id(node.id)
         # sample_aug = get_node_timestep_data(self.env, scene, t, node, self.state, self.pred_state,

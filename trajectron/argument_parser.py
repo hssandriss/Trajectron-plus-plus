@@ -41,16 +41,16 @@ parser.add_argument('--edge_addition_filter',
                     nargs='+',
                     help="what scaling to use for edges as they're created",
                     type=float,
-                    default=[0.25, 0.5, 0.75, 1.0]) # We don't automatically pad left with 0.0, if you want a sharp
-                                                    # and short edge addition, then you need to have a 0.0 at the
-                                                    # beginning, e.g. [0.0, 1.0].
+                    default=[0.25, 0.5, 0.75, 1.0])  # We don't automatically pad left with 0.0, if you want a sharp
+# and short edge addition, then you need to have a 0.0 at the
+# beginning, e.g. [0.0, 1.0].
 
 parser.add_argument('--edge_removal_filter',
                     nargs='+',
                     help="what scaling to use for edges as they're removed",
                     type=float,
                     default=[1.0, 0.0])  # We don't automatically pad right with 0.0, if you want a sharp drop off like
-                                         # the default, then you need to have a 0.0 at the end.
+# the default, then you need to have a 0.0 at the end.
 
 parser.add_argument('--override_attention_radius',
                     action='append',
@@ -98,6 +98,11 @@ parser.add_argument("--data_dir",
                     help="what dir to look in for data",
                     type=str,
                     default='../experiments/processed')
+
+parser.add_argument("--scores_dir",
+                    help="what dir to look in for Kalman scores data",
+                    type=str,
+                    default='../experiments/ETH_Kalman')
 
 parser.add_argument("--train_data_dict",
                     help="what file to load for training data",
