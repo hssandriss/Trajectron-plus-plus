@@ -17,6 +17,7 @@ models/
 *.cb
 *.cb2
 .*.lb
+*.pkl
 
 ## Intermediate documents:
 *.dvi
@@ -410,3 +411,9 @@ dmypy.json
 # Pyre type checker
 .pyre/
 
+# ZFC
+experiments/pedestrians/results/eth_multi_ZFC_ade_best_of.csv
+experiments/pedestrians/results/eth_multi_ZFC_fde_best_of.csv
+experiments/pedestrians/results/eth_multi_ZFC_kde_best_of.csv
+trajectron/eval_loss_eth_ar3_ZFC.csv
+trajectron/train_loss_eth_ar3_ZFC.csv

@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from model.mgcvae import MultimodalGenerativeCVAE
+from model.multi_hyp import MultiHypothesisNet
 from model.dataset import get_timesteps_data, restore
 
 
@@ -41,31 +42,32 @@ class Trajectron(object):
         for node_type in env.NodeType:
             # Only add a Model for NodeTypes we want to predict
             if node_type in self.pred_state.keys():
-                self.node_models_dict[node_type] = MultimodalGenerativeCVAE(env,
-                                                                            node_type,
-                                                                            self.model_registrar,
-                                                                            self.hyperparams,
-                                                                            self.device,
-                                                                            edge_types,
-                                                                            log_writer=self.log_writer)
+                self.node_models_dict[node_type] = MultiHypothesisNet(env,
+                                                                      node_type,
+                                                                      self.model_registrar,
+                                                                      self.hyperparams,
+                                                                      self.device,
+                                                                      edge_types,
+                                                                      log_writer=self.log_writer)
 
     def set_curr_iter(self, curr_iter):
         self.curr_iter = curr_iter
         for node_str, model in self.node_models_dict.items():
             model.set_curr_iter(curr_iter)
 
-    def set_annealing_params(self):
-        for node_str, model in self.node_models_dict.items():
-            model.set_annealing_params()
+#     def set_annealing_params(self):
+#         for node_str, model in self.node_models_dict.items():
+#             model.set_annealing_params()
 
-    def step_annealers(self, node_type=None):
-        if node_type is None:
-            for node_type in self.node_models_dict:
-                self.node_models_dict[node_type].step_annealers()
-        else:
-            self.node_models_dict[node_type].step_annealers()
+#     def step_annealers(self, node_type=None):
+#         if node_type is None:
+#             for node_type in self.node_models_dict:
+#                 self.node_models_dict[node_type].step_annealers()
+#         else:
+#             self.node_models_dict[node_type].step_annealers()
 
-    def train_loss(self, batch, node_type):
+    def train_loss(self, batch, node_type, top_n=8):
+        # TODO DATA explained here
         (first_history_index,
          x_t, y_t, x_st_t, y_st_t,
          neighbors_data_st,
@@ -94,7 +96,8 @@ class Trajectron(object):
                                     neighbors_edge_value),
                                 robot=robot_traj_st_t,
                                 map=map,
-                                prediction_horizon=self.ph)
+                                prediction_horizon=self.ph,
+                                top_n=top_n)
 
         return loss
 
@@ -144,6 +147,7 @@ class Trajectron(object):
                 all_z_sep=False):
 
         predictions_dict = {}
+        features_list = []
         for node_type in self.env.NodeType:
             if node_type not in self.pred_state:
                 continue
@@ -173,7 +177,7 @@ class Trajectron(object):
                 map = map.to(self.device)
 
             # Run forward pass
-            predictions = model.predict(inputs=x,
+            predictions, features = model.predict(inputs=x,
                                         inputs_st=x_st_t,
                                         first_history_indices=first_history_index,
                                         neighbors=neighbors_data_st,
@@ -186,8 +190,12 @@ class Trajectron(object):
                                         gmm_mode=gmm_mode,
                                         full_dist=full_dist,
                                         all_z_sep=all_z_sep)
+            
+            features_list.append(features)
 
-            predictions_np = predictions.cpu().detach().numpy()
+            predictions_np = predictions.cpu().detach().numpy() #[bs, num_hyp, horizon, 2]
+            # predictions in trajectron  should be: [num_hyp, bs, horizon, 2]
+            predictions_np = np.transpose(predictions_np, (1,0,2,3))
 
             # Assign predictions to node
             for i, ts in enumerate(timesteps_o):
@@ -196,4 +204,4 @@ class Trajectron(object):
                 predictions_dict[ts][nodes[i]] = np.transpose(
                     predictions_np[:, [i]], (1, 0, 2, 3))
 
-        return predictions_dict
+        return predictions_dict, features_list
