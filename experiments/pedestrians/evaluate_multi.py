@@ -39,6 +39,7 @@ def load_model(model_dir, env, ts=100):
 
     trajectron.set_environment(env)
     #trajectron.set_annealing_params()
+    import pdb; pdb.set_trace()
     return trajectron, hyperparams
 
 

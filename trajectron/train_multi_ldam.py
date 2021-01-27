@@ -21,7 +21,7 @@ from argument_parser import args
 from model.dataset import EnvironmentDataset, EnvironmentDatasetKalman, collate
 from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
-from model.trajectron_multi import Trajectron
+from model.trajectron_multi_ldam import Trajectron
 
 # torch.autograd.set_detect_anomaly(True)
 
@@ -97,7 +97,7 @@ def main():
     print('-----------------------')
 
     log_writer = None
-    model_dir = None
+    
     if not args.debug:
         # Create the log and model directiory if they're not present.
         model_dir = os.path.join(args.log_dir,
@@ -109,6 +109,9 @@ def main():
             json.dump(hyperparams, conf_json)
 
         log_writer = SummaryWriter(log_dir=model_dir)
+
+    model_dir = '/misc/lmbraid21/ayadim/Trajectron-plus-plus/experiments/pedestrians/models/models_Multi_hyp16_Jan_2021_19_56_41_hotel_ar3'
+    ts = 150
 
     # Load training and evaluation environments and scenes
     train_scenes = []
@@ -144,7 +147,6 @@ def main():
                                              return_robot=not args.incl_robot_node)
     # nb of observations in each Kalman class
     class_count_dict = train_dataset.class_count_dict 
-    import pdb; pdb.set_trace()
     train_data_loader = dict()
 
     for node_type_data_set in train_dataset:
@@ -217,13 +219,13 @@ def main():
             '''
 
     model_registrar = ModelRegistrar(model_dir, args.device)
+    model_registrar.load_models(ts)
 
     trajectron = Trajectron(model_registrar,
                             hyperparams,
                             log_writer,
                             args.device,
                             class_count_dict)
-
     trajectron.set_environment(train_env)
     # trajectron.set_annealing_params()
     print('Created Training Model.')
@@ -261,9 +263,12 @@ def main():
     curr_iter_node_type = {
         node_type: 0 for node_type in train_data_loader.keys()}
     top_n = hyperparams['num_hyp']
-    for epoch in range(1, args.train_epochs + 1):
-        if epoch > 50 and epoch % 20 == 0:
-            top_n = max(top_n//2, 1)
+    weight = None
+
+    for epoch in range(1 + ts, args.train_epochs + 1 + ts):
+        if epoch > ts + 30 :
+            weight = torch.cuda.FloatTensor([*class_count_dict[0].values()])
+            weight = 1.0 / weight
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
         loss_epoch = []
@@ -271,12 +276,11 @@ def main():
             curr_iter = curr_iter_node_type[node_type]
             pbar = tqdm(data_loader, ncols=80)
             for batch in pbar:
-                import pdb; pdb.set_trace()
                 trajectron.set_curr_iter(curr_iter)
                 # trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
                 train_loss = trajectron.train_loss(
-                    batch, node_type, top_n=top_n)
+                    batch, node_type, weight = weight, top_n=top_n)
                 pbar.set_description(
                     f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
                 loss_epoch.append(train_loss.item()/top_n)
@@ -303,7 +307,7 @@ def main():
                 'epoch', 'loss']), ignore_index=True)
         train_dataset.augment = False
 
-        if args.eval_every is not None or args.vis_every is not None:
+        '''if args.eval_every is not None or args.vis_every is not None:
             eval_trajectron.set_curr_iter(epoch)
 
         #################################
@@ -419,7 +423,7 @@ def main():
                                                 log_writer,
                                                 f"{node_type}/eval_loss",
                                                 epoch)
-
+                '''
                 # Predict batch timesteps for evaluation dataset evaluation
                 # eval_batch_errors = []
                 # for scene in tqdm(eval_scenes, desc='Sample Evaluation', ncols=80):
@@ -476,7 +480,7 @@ def main():
         if args.save_every is not None and args.debug is False and epoch % args.save_every == 0:
             model_registrar.save_models(epoch)
     train_loss_df.to_csv('train_loss%s.csv' % args.log_tag, sep=";")
-    eval_loss_df.to_csv('eval_loss%s.csv' % args.log_tag, sep=";")
+    #eval_loss_df.to_csv('eval_loss%s.csv' % args.log_tag, sep=";")
 
 
 if __name__ == '__main__':
