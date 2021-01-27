@@ -1,3 +1,7 @@
+import evaluation
+from model.trajectron_multi import Trajectron
+from model.model_registrar import ModelRegistrar
+from tqdm import tqdm
 import sys
 import os
 import dill
@@ -8,10 +12,6 @@ import numpy as np
 import pandas as pd
 
 sys.path.append("../../trajectron")
-from tqdm import tqdm
-from model.model_registrar import ModelRegistrar
-from model.trajectron_multi import Trajectron
-import evaluation
 
 seed = 0
 np.random.seed(seed)
@@ -38,7 +38,9 @@ def load_model(model_dir, env, ts=100):
     trajectron = Trajectron(model_registrar, hyperparams, None, 'cpu')
 
     trajectron.set_environment(env)
-    #trajectron.set_annealing_params()
+    # trajectron.set_annealing_params()
+    import pdb
+    pdb.set_trace()
     return trajectron, hyperparams
 
 
@@ -65,7 +67,7 @@ if __name__ == "__main__":
     max_hl = hyperparams['maximum_history_length']
 
     with torch.no_grad():
-        
+
         ############### BEST OF 20 ###############
         eval_ade_batch_errors = np.array([])
         eval_fde_batch_errors = np.array([])
@@ -75,15 +77,15 @@ if __name__ == "__main__":
             print(f"---- Evaluating Scene {i + 1}/{len(scenes)}")
             for t in tqdm(range(0, scene.timesteps, 10)):
                 timesteps = np.arange(t, t + 10)
-                predictions,features = eval_stg.predict(scene,
-                                               timesteps,
-                                               ph,
-                                               num_samples=20,
-                                               min_history_timesteps=7,
-                                               min_future_timesteps=12,
-                                               z_mode=False,
-                                               gmm_mode=False,
-                                               full_dist=False)
+                predictions, features = eval_stg.predict(scene,
+                                                         timesteps,
+                                                         ph,
+                                                         num_samples=20,
+                                                         min_history_timesteps=7,
+                                                         min_future_timesteps=12,
+                                                         z_mode=False,
+                                                         gmm_mode=False,
+                                                         full_dist=False)
 
                 if not predictions:
                     continue
@@ -105,6 +107,3 @@ if __name__ == "__main__":
                      ).to_csv(os.path.join(args.output_path, args.output_tag + '_fde_best_of.csv'))
         pd.DataFrame({'value': eval_kde_nll, 'metric': 'kde', 'type': 'best_of'}
                      ).to_csv(os.path.join(args.output_path, args.output_tag + '_kde_best_of.csv'))
-        
-
-        

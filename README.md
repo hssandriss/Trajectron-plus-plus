@@ -1,5 +1,6 @@
 <p align="center"><img width="100%" src="img/Trajectron++.png"/></p>
 
+
 # Trajectron++: Dynamically-Feasible Trajectory Forecasting With Heterogeneous Data #
 This repository contains the code for [Trajectron++: Dynamically-Feasible Trajectory Forecasting With Heterogeneous Data](https://arxiv.org/abs/2001.03093) by Tim Salzmann\*, Boris Ivanovic\*, Punarjay Chakravarty, and Marco Pavone (\* denotes equal contribution).
 

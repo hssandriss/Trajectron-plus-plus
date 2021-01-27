@@ -142,6 +142,10 @@ def main():
                                              min_history_timesteps=hyperparams['minimum_history_length'],
                                              min_future_timesteps=hyperparams['prediction_horizon'],
                                              return_robot=not args.incl_robot_node)
+    # nb of observations in each Kalman class
+    class_count_dict = train_dataset.class_count_dict
+    import pdb
+    pdb.set_trace()
     train_data_loader = dict()
 
     for node_type_data_set in train_dataset:
@@ -154,8 +158,7 @@ def main():
         train_data_loader[node_type_data_set.node_type] = node_type_dataloader
 
     print(f"Loaded training data from {train_data_path}")
-    pdb
-    eval_scenes = []
+    '''eval_scenes = []
     eval_scenes_sample_probs = None
     if args.eval_every is not None:
         eval_data_path = os.path.join(args.data_dir, args.eval_data_dict)
@@ -197,7 +200,7 @@ def main():
             eval_data_loader[node_type_data_set.node_type] = node_type_dataloader
 
         print(f"Loaded evaluation data from {eval_data_path}")
-
+'''
     # Offline Calculate Scene Graph
     if hyperparams['offline_scene_graph'] == 'yes':
         print(f"Offline calculating scene graphs")
@@ -206,24 +209,26 @@ def main():
                                         hyperparams['edge_addition_filter'],
                                         hyperparams['edge_removal_filter'])
             print(f"Created Scene Graph for Training Scene {i}")
-
+        '''
         for i, scene in enumerate(eval_scenes):
             scene.calculate_scene_graph(eval_env.attention_radius,
                                         hyperparams['edge_addition_filter'],
                                         hyperparams['edge_removal_filter'])
             print(f"Created Scene Graph for Evaluation Scene {i}")
+            '''
 
     model_registrar = ModelRegistrar(model_dir, args.device)
 
     trajectron = Trajectron(model_registrar,
                             hyperparams,
                             log_writer,
-                            args.device)
+                            args.device,
+                            class_count_dict)
 
     trajectron.set_environment(train_env)
     # trajectron.set_annealing_params()
     print('Created Training Model.')
-
+    '''
     eval_trajectron = None
     if args.eval_every is not None or args.vis_every is not None:
         eval_trajectron = Trajectron(model_registrar,
@@ -233,7 +238,7 @@ def main():
         eval_trajectron.set_environment(eval_env)
         # eval_trajectron.set_annealing_params()
     print('Created Evaluation Model.')
-
+    '''
     optimizer = dict()
     lr_scheduler = dict()
     for node_type in train_env.NodeType:
@@ -267,6 +272,8 @@ def main():
             curr_iter = curr_iter_node_type[node_type]
             pbar = tqdm(data_loader, ncols=80)
             for batch in pbar:
+                import pdb
+                pdb.set_trace()
                 trajectron.set_curr_iter(curr_iter)
                 # trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
