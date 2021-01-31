@@ -1,4 +1,5 @@
 import os
+
 import torch
 import torch.nn as nn
 
@@ -50,18 +51,25 @@ class ModelRegistrar(nn.Module):
     def print_model_names(self):
         print(self.model_dict.keys())
 
-    def save_models(self, curr_iter):
+    def save_models(self, curr_iter, extra_tag=None):
         # Create the model directiory if it's not present.
-        save_path = os.path.join(self.model_dir,
-                                 'model_registrar-%d.pt' % curr_iter)
+        if extra_tag:
+            save_path = os.path.join(self.model_dir,
+                                     'model_registrar-%d-%s.pt' % (curr_iter, extra_tag))
+        else:
+            save_path = os.path.join(self.model_dir,
+                                     'model_registrar-%d.pt' % curr_iter)
 
         torch.save(self.model_dict, save_path)
 
-    def load_models(self, iter_num):
+    def load_models(self, iter_num, extra_tag=None):
         self.model_dict.clear()
-        
-        save_path = os.path.join(self.model_dir,
-                                 'model_registrar-%d.pt' % iter_num)
+        if extra_tag:
+            save_path = os.path.join(self.model_dir,
+                                     'model_registrar-%d-%s.pt' % (iter_num, extra_tag))
+        else:
+            save_path = os.path.join(self.model_dir,
+                                     'model_registrar-%d.pt' % iter_num)
 
         print('')
         print('Loading from ' + save_path)

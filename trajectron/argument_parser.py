@@ -174,4 +174,25 @@ parser.add_argument('--save_every',
                     help='how often to save during training, never if None',
                     type=int,
                     default=1)
+
+parser.add_argument('--experiment',
+                    help='Pretrained Trajectron Folder Name',
+                    type=str)
+
+parser.add_argument('--net_f_ts',
+                    help='Checkpoint to load for model f',
+                    type=int)
+
+parser.add_argument('--net_g_ts',
+                    help='Checkpoint to load for model g',
+                    type=int)
+
+parser.add_argument('--net_trajectron_ts',
+                    help='Checkpoint to load for model trajectron',
+                    type=int)
+
+parser.add_argument('--warm', default=160, type=int, help='Deferred strategy for re-balancing')
+parser.add_argument('--gen', '-gen', action='store_true', help='')
+
+
 args = parser.parse_args()

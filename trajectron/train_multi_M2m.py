@@ -1,7 +1,6 @@
 import json
 import os
 import pathlib
-import pdb
 import random
 import time
 import warnings
@@ -11,6 +10,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import torch
+import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 from torch import nn, optim, utils
 from tqdm import tqdm
@@ -18,46 +18,12 @@ from tqdm import tqdm
 import evaluation
 import visualization
 from argument_parser import args
+from M2m_utils import train_epoch, train_gen_epoch
+from model import trajectron_M2m
 from model.dataset import EnvironmentDataset, EnvironmentDatasetKalman, collate
 from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
 from model.trajectron_M2m import Trajectron
-
-
-def train_epoch(trajectron, train_data_loader, epoch):
-    """
-    """
-    global curr_iter_node_type, lr_scheduler, optimizer, log_writer
-    loss_epoch = []
-    for node_type, data_loader in train_data_loader.items():
-        curr_iter = curr_iter_node_type[node_type]
-        pbar = tqdm(data_loader, ncols=80)
-        for batch in pbar:
-            trajectron.set_curr_iter(curr_iter)
-            optimizer[node_type].zero_grad()
-            train_loss = trajectron.train_loss(batch, node_type)
-            pbar.set_description(
-                f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
-            loss_epoch.append(train_loss.item())
-            train_loss.backward()
-            # Clipping gradients.
-            if hyperparams['grad_clip'] is not None:
-                nn.utils.clip_grad_value_(
-                    trajectron.model_registrar.parameters(), hyperparams['grad_clip'])
-            optimizer[node_type].step()
-            # Stepping forward the learning rate scheduler and annealers.
-            lr_scheduler[node_type].step()
-            curr_iter += 1
-
-        if not args.debug:
-            log_writer.add_scalar(f"{node_type}/train/learning_rate",
-                                  lr_scheduler[node_type].get_lr()[0],
-                                  epoch)
-            log_writer.add_scalar(
-                f"{node_type}/train/loss", np.mean(loss_epoch), epoch)
-        curr_iter_node_type[node_type] = curr_iter
-    return np.mean(loss_epoch)
-
 
 if __name__ == '__main__':
 
@@ -114,6 +80,10 @@ if __name__ == '__main__':
     hyperparams['Enc_FC_dims'] = 128
     hyperparams['num_hyp'] = 20
 
+    print("\n#################################")
+    print("#       M2m-Trajectron++        #")
+    print("#################################")
+
     print('-----------------------')
     print('| TRAINING PARAMETERS |')
     print('-----------------------')
@@ -135,10 +105,7 @@ if __name__ == '__main__':
     model_dir = None
     if not args.debug:
         # Create the log and model directiory if they're not present.
-        model_dir = os.path.join(args.log_dir,
-                                 'models_Multi_hyp' + time.strftime('%d_%b_%Y_%H_%M_%S', time.localtime()) + args.log_tag)
-        pathlib.Path(model_dir).mkdir(parents=True, exist_ok=True)
-
+        model_dir = os.path.join(args.log_dir, args.experiment)
         # Save config to model directory
         with open(os.path.join(model_dir, 'config.json'), 'w') as conf_json:
             json.dump(hyperparams, conf_json)
@@ -177,6 +144,19 @@ if __name__ == '__main__':
                                              min_history_timesteps=hyperparams['minimum_history_length'],
                                              min_future_timesteps=hyperparams['prediction_horizon'],
                                              return_robot=not args.incl_robot_node)
+
+    hyperparams['class_count_dic'] = train_dataset.class_count_dict[0]
+    hyperparams['class_count'] = list(hyperparams['class_count_dic'].values())
+    hyperparams['num_classes'] = len(hyperparams['class_count_dic'])
+    # TODO Read these values from command line args
+    hyperparams['beta'] = 0.999
+    hyperparams['gamma'] = 0.9
+    hyperparams['lam'] = 0.5
+    hyperparams['step_size'] = 0.1
+    hyperparams['attack_iter'] = 10
+
+    N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(args.device)
+
     train_data_loader = dict()
 
     for node_type_data_set in train_dataset:
@@ -246,18 +226,20 @@ if __name__ == '__main__':
                                         hyperparams['edge_removal_filter'])
             print(f"Created Scene Graph for Evaluation Scene {i}")
     # ! Creating Models
-    if args.net_g_dir and args.net_g_ts:
-        model_registrar_g = ModelRegistrar(args.net_g_dir, args.device)
-        model_registrar_g.load_models(args.net_g_ts)
+    if args.net_g_ts:
+        model_registrar_g = ModelRegistrar(model_dir, args.device)
+        model_registrar_g.load_models(args.net_g_ts, "g")
         trajectron_g = Trajectron(model_registrar_g,
                                   hyperparams,
                                   log_writer,
                                   args.device)
         trajectron_g.set_environment(train_env)
+        extra_tag = "f"
     else:
-        model_dir = model_dir + "_g"
-
+        extra_tag = "g"
+    # Load pretrained model on multi hypothesis
     model_registrar = ModelRegistrar(model_dir, args.device)
+    model_registrar.load_models(args.net_trajectron_ts)
     trajectron = Trajectron(model_registrar,
                             hyperparams,
                             log_writer,
@@ -291,6 +273,9 @@ if __name__ == '__main__':
         elif hyperparams['learning_rate_style'] == 'exp':
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
                                                                        gamma=hyperparams['learning_decay_rate'])
+    #  ! Classification criterion
+    criterion = nn.CrossEntropyLoss(reduce='none')
+
     # ! Training loop
     train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
     eval_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
@@ -299,15 +284,25 @@ if __name__ == '__main__':
     #################################
     curr_iter_node_type = {
         node_type: 0 for node_type in train_data_loader.keys()}
+    SUCCESS = {
+        node_type: torch.zeros(args.train_epochs, hyperparams['num_classes'], 2)
+        for node_type in train_data_loader.keys()}
     for epoch in range(1, args.train_epochs + 1):
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
         if epoch >= args.warm and args.gen:
             # Generation process and training with generated data
-            pass
+            train_stats = train_gen_epoch(trajectron, trajectron_g, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+                                          train_data_loader, hyperparams, args.device)
+            for node_type in train_data_loader.keys():
+                SUCCESS[node_type][epoch-1, :, :] = train_stats[node_type]['t_success'].float()
+                print("Success rate metrics")
+                print(SUCCESS[node_type][epoch-1, -10:, :])
+                np.save(model_dir + '/{node_type}_success.npy', SUCCESS[node_type].cpu().numpy())
         else:
-            loss_epoch = train_epoch(trajectron, train_data_loader, epoch)
-            train_loss_df = train_loss_df.append(pd.DataFrame(data=[[epoch, loss_epoch], columns=[
+            loss_epoch = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+                                     train_data_loader, epoch, hyperparams, log_writer, args.device)
+            train_loss_df = train_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(loss_epoch)]], columns=[
                 'epoch', 'loss']), ignore_index=True)
         train_dataset.augment = False
 
@@ -347,7 +342,9 @@ if __name__ == '__main__':
         #                                         f"{node_type}/eval_loss",
         #                                         epoch)
 
-        # if args.save_every is not None and args.debug is False and epoch % args.save_every == 0:
-        #     model_registrar.save_models(epoch)
-    train_loss_df.to_csv('./training_logs/train_loss%s.csv' % args.log_tag, sep=";")
-    eval_loss_df.to_csv('./training_logs/eval_loss%s.csv' % args.log_tag, sep=";")
+        if args.save_every is not None and epoch % args.save_every == 0:
+            model_registrar.save_models(epoch, extra_tag)
+    train_loss_df.to_csv('./training_logs/train_loss_%s_%s.csv' %
+                         (args.log_tag, extra_tag), sep=";")
+    eval_loss_df.to_csv('./training_logs/eval_loss_%s_%s.csv' %
+                        (args.log_tag, extra_tag), sep=";")
