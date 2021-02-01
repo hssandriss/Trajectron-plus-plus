@@ -1,10 +1,11 @@
 import os
+from copy import deepcopy
 
 import dill
 import numpy as np
+import numpy.random as nr
 import torch
 from torch.utils import data
-from copy import deepcopy
 
 from .preprocessing import get_node_timestep_data
 
@@ -65,6 +66,8 @@ class NodeTypeDatasetKalman(data.Dataset):
         self.edge_types = [edge_type for edge_type in env.get_edge_types() if edge_type[0] is node_type]
         self.load_scores()
         self.rebalance_bins()
+        # self.smote()
+        # import pdb; pdb.set_trace()
 
     def index_env(self, node_freq_mult, scene_freq_mult, **kwargs):
         index = list()
@@ -78,7 +81,6 @@ class NodeTypeDatasetKalman(data.Dataset):
                         (node.frequency_multiplier if node_freq_mult else 1)
                     counter += 1
             # print(counter, scene.timesteps, scene_freq_mult, node_freq_mult)
-
         return index
 
     def rebalance(self):
@@ -103,6 +105,39 @@ class NodeTypeDatasetKalman(data.Dataset):
                 num_samples=len(self.class_weights_all),
                 replacement=True
             )
+    
+    # def smote(self):
+    #     # data -> (first_history_index, x_t, y_t, x_st_t, y_st_t, 
+    #     # neighbors_data_st, neighbors_edge_value, robot_traj_st_t, map_tuple)
+    #     # TODO: find a way to use SMOTE -> reason on the encoded tensor?
+    #     n_class = len(self.class_count_dict)
+    #     targets = self.kalman_classes
+    #     n_max = max(self.class_count_dict.values())
+    #     aug_data = []
+    #     aug_label = []
+
+    #     for k in range(1, n_class):
+    #         indices = np.where(targets == k)[0]
+    #         class_len = len(indices)
+    #         class_dist = np.zeros((class_len, class_len))
+    #         import pdb; pdb.set_trace()
+    #         class_data = [self.__getitem__(i) for i in indices]
+    #         # Augmentation with SMOTE ( k-nearest )
+    #         for i in range(class_len):
+    #             for j in range(class_len):
+    #                 class_dist[i, j] = np.linalg.norm(class_data[i] - class_data[j])
+    #         sorted_idx = np.argsort(class_dist)
+
+    #         for i in range(n_max - class_len):
+    #             lam = nr.uniform(0, 1)
+    #             row_idx = i % class_len
+    #             col_idx = int((i - row_idx) / class_len) % (class_len - 1)
+    #             new_data = np.round(lam * class_data[row_idx] + (1 - lam) * class_data[sorted_idx[row_idx, 1 + col_idx]])
+    #             aug_data.append(new_data.astype('uint8'))
+    #             aug_label.append(k)
+    #     return np.array(aug_data), np.array(aug_label)
+
+    
 
     def rebalance_bins(self):
         env_name = self.env.scenes[0].name

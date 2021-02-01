@@ -1,3 +1,5 @@
+import warnings
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -5,10 +7,15 @@ import tqdm
 from torch import nn
 from tqdm import tqdm
 
+# warnings.filterwarnings("ignore", category=UserWarning)
+
+# TODO Build an evaluation function that computes the accuracy classwise 
+
 
 def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
                 train_data_loader, epoch, hyperparams, log_writer, device):
     loss_epoch = []
+    # cw_loss_epoch =[]
     trajectron.model_registrar.train()
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
@@ -21,16 +28,15 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
             target = target.to(device)
 
             e_x = trajectron.encoded_x(x, node_type)
-            e_x = tuple(tensor.detach()
-                        if tensor is not None else None for tensor in e_x)
+            e_x = tuple(tensor.detach() if tensor is not None else None for tensor in e_x)
             x, n_s_t0, x_nr_t = e_x
             y_hat, features = trajectron.predict_kalman_class(
                 x, n_s_t0, x_nr_t, node_type)
             train_loss = criterion(y_hat, target).mean()
-
-            pbar.set_description(
-                f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
+            # cw_loss = classwise_loss(y_hat, target)
+            pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
             loss_epoch.append(train_loss.item())
+            # cw_loss_epoch.append(cw_loss[0].item())
             train_loss.backward()
             # Clipping gradients.
             if hyperparams['grad_clip'] is not None:
@@ -52,6 +58,9 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
 
 
 def classwise_loss(outputs, targets):
+    """
+     Returns logit confidence
+    """
     out_1hot = torch.zeros_like(outputs)
     out_1hot.scatter_(1, targets.view(-1, 1), 1)
     return (outputs * out_1hot).sum(1).mean()
@@ -137,7 +146,6 @@ def generation(trajectron_g, trajectron, node_type, device, inputs, seed_targets
     for _ in range(max_iter):
         inputs_ = [tensor.clone().detach().requires_grad_(
             True) if tensor is not None else None for tensor in inputs_]
-        import pdb; pdb.set_trace()
         outputs_g, _ = trajectron_g.predict_kalman_class(*inputs_, node_type)
         outputs_r, _ = trajectron.predict_kalman_class(*inputs_, node_type)
 
@@ -146,23 +154,19 @@ def generation(trajectron_g, trajectron, node_type, device, inputs, seed_targets
         # x, n_s_t0, x_nr_t
         if trajectron.hyperparams['incl_robot_node']:
             x, n_s_t0, x_nr_t = inputs_
-            grad_x, grad_x_s_t0, grad_x_nr_t = torch.autograd.grad(
-                loss, [x, n_s_t0, x_nr_t])
+            grad_x, grad_x_s_t0, grad_x_nr_t = torch.autograd.grad(loss, [x, n_s_t0, x_nr_t])
             x = x - make_step(grad_x, 'l2', step_size)
             n_s_t0 = n_s_t0 - make_step(grad_x_s_t0, 'l2', step_size)
             x_nr_t = x_nr_t - make_step(grad_x_nr_t, 'l2', step_size)
-            inputs_ = [torch.clamp(x, 0, 1), torch.clamp(
-                n_s_t0, 0, 1), torch.clamp(x_nr_t, 0, 1)]
+            inputs_ = [torch.clamp(x, 0, 1), torch.clamp(n_s_t0, 0, 1), torch.clamp(x_nr_t, 0, 1)]
         else:
             x, n_s_t0, _ = inputs_
-            grad_x, grad_x_s_t0 = torch.autograd.grad(
-                loss, [x, n_s_t0])
+            grad_x, grad_x_s_t0 = torch.autograd.grad(loss, [x, n_s_t0])
             x = x - make_step(grad_x, 'l2', step_size)
             n_s_t0 = n_s_t0 - make_step(grad_x_s_t0, 'l2', step_size)
-            inputs_ = [torch.clamp(x, 0, 1), torch.clamp(
-                n_s_t0, 0, 1), None]
-    import pdb; pdb.set_trace()
-    inputs_ = inputs_.detach()
+            inputs_ = [torch.clamp(x, 0, 1), torch.clamp(n_s_t0, 0, 1), None]
+    # inputs_ = inputs_.detach()
+    inputs_ = [tensor.detach() if tensor is not None else None for tensor in inputs_]
     outputs_g, _ = trajectron_g.predict_kalman_class(*inputs_, node_type)
 
     # one_hot is the expected output if we generated the goal targets k
@@ -171,9 +175,9 @@ def generation(trajectron_g, trajectron, node_type, device, inputs, seed_targets
     # probs_g is the probabilites of k* in output_g
     probs_g = torch.softmax(outputs_g, dim=1)[one_hot.to(torch.bool)]
     # correct is the condition that indicates if x* can be used as part of samples from k*
-    correct = (probs_g >= gamma) * torch.bernoulli(p_accept).byte().to(device)
+    correct = ((probs_g >= gamma) * torch.bernoulli(p_accept)).type(torch.bool).to(device)
+    
     trajectron.model_registrar.train()
-
     return inputs_, correct
 
 
@@ -211,7 +215,6 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
         tensor[select_idx] if tensor is not None else None for tensor in inputs_orig_tuple)
 
     # ! Up to this point, we sample seed classes k0 of initial point x0 given target class k.
-    import pdb; pdb.set_trace()
     gen_inputs, correct_mask = generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets,
                                           p_accept, hyperparams['gamma'], hyperparams['lam'], hyperparams['step_size'], True, hyperparams['attack_iter'])
     #######################
@@ -242,16 +245,13 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     y_hat, features = trajectron.predict_kalman_class(
         x, n_s_t0, x_nr_t, node_type)
     train_loss = criterion(y_hat, targets)
-
-    train_loss.backward()
+    train_loss.mean().backward()
     # Clipping gradients.
     if hyperparams['grad_clip'] is not None:
-        nn.utils.clip_grad_value_(
-            trajectron.model_registrar.parameters(), hyperparams['grad_clip'])
+        nn.utils.clip_grad_value_(trajectron.model_registrar.parameters(), hyperparams['grad_clip'])
     optimizer[node_type].step()
     # Stepping forward the learning rate scheduler and annealers.
     lr_scheduler[node_type].step()
-
     # For logging the training
     oth_loss_total = sum_tensor(train_loss[others_idx])
     gen_loss_total = sum_tensor(train_loss[gen_c_idx])
@@ -280,7 +280,7 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     return oth_loss_total, gen_loss_total, num_others, num_correct_oth, num_gen, num_correct_gen, p_g_orig, p_g_targ, success
 
 
-def train_gen_epoch(trajectron, trajectron_g, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+def train_gen_epoch(trajectron, trajectron_g,epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion,
                     train_data_loader, hyperparams, device):
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(device)
@@ -315,9 +315,9 @@ def train_gen_epoch(trajectron, trajectron_g, curr_iter_node_type, optimizer, lr
             gen_index = (1 - torch.bernoulli(gen_probs)).nonzero()
             gen_index = gen_index.view(-1)
             gen_targets = targets[gen_index]
-            import pdb; pdb.set_trace()
             t_loss, g_loss, num_others, num_correct, num_gen, num_gen_correct, p_g_orig_batch, p_g_targ_batch, success = train_net(
                 trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, e_x, targets, gen_index, gen_targets, hyperparams, device)
+            pbar.set_description(f"Epoch {epoch}, {node_type} # gen_correct: {num_gen_correct:.2f}")
             oth_loss += t_loss
             gen_loss += g_loss
             total_oth += num_others

@@ -98,5 +98,9 @@ class Trajectron(object):
 
     def predict_kalman_class(self, x, n_s_t0, x_nr_t, node_type):
         model = self.node_models_dict[node_type]
+        # Weight normalization
+        with torch.no_grad():
+            norm = torch.norm(model.node_modules[node_type + '/decoder/kalman_logits'].weight, dim=1, keepdim=True)
+            model.node_modules[node_type + '/decoder/kalman_logits'].weight.div_(norm)
         logits, features = model.predict_kalman_class(x, n_s_t0, x_nr_t)
         return logits, features

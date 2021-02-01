@@ -13,13 +13,13 @@ import torch
 import torch.nn.functional as F
 from tensorboardX import SummaryWriter
 from torch import nn, optim, utils
+from torch.utils.data.sampler import Sampler
 from tqdm import tqdm
 
 import evaluation
 import visualization
 from argument_parser import args
-from M2m_utils import train_epoch, train_gen_epoch
-from model import trajectron_M2m
+from M2m_toolbox import train_epoch, train_gen_epoch
 from model.dataset import EnvironmentDataset, EnvironmentDatasetKalman, collate
 from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
@@ -151,9 +151,9 @@ if __name__ == '__main__':
     # TODO Read these values from command line args
     hyperparams['beta'] = 0.999
     hyperparams['gamma'] = 0.9
-    hyperparams['lam'] = 0.5
-    hyperparams['step_size'] = 0.1
-    hyperparams['attack_iter'] = 10
+    hyperparams['lam'] = 0.2
+    hyperparams['step_size'] = 0.0025
+    hyperparams['attack_iter'] = 100
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(args.device)
 
@@ -164,7 +164,8 @@ if __name__ == '__main__':
                                                      collate_fn=collate,
                                                      pin_memory=False if args.device is 'cpu' else True,
                                                      batch_size=args.batch_size,
-                                                     shuffle=True,
+                                                     sampler=node_type_data_set.weighted_sampler,
+                                                    #  shuffle=True,
                                                      num_workers=args.preprocess_workers)
         train_data_loader[node_type_data_set.node_type] = node_type_dataloader
 
@@ -209,7 +210,7 @@ if __name__ == '__main__':
                                                          shuffle=True,
                                                          num_workers=args.preprocess_workers)
             eval_data_loader[node_type_data_set.node_type] = node_type_dataloader
-
+    # TODO Assert if the number of classes are the same for training, eval, test
         print(f"Loaded evaluation data from {eval_data_path}")
     # ! Offline Calculate Scene Graph
     if hyperparams['offline_scene_graph'] == 'yes':
@@ -219,12 +220,13 @@ if __name__ == '__main__':
                                         hyperparams['edge_addition_filter'],
                                         hyperparams['edge_removal_filter'])
             print(f"Created Scene Graph for Training Scene {i}")
-
-        for i, scene in enumerate(eval_scenes):
-            scene.calculate_scene_graph(eval_env.attention_radius,
-                                        hyperparams['edge_addition_filter'],
-                                        hyperparams['edge_removal_filter'])
-            print(f"Created Scene Graph for Evaluation Scene {i}")
+        
+        if args.eval_every is not None or args.vis_every is not None:
+            for i, scene in enumerate(eval_scenes):
+                scene.calculate_scene_graph(eval_env.attention_radius,
+                                            hyperparams['edge_addition_filter'],
+                                            hyperparams['edge_removal_filter'])
+                print(f"Created Scene Graph for Evaluation Scene {i}")
     # ! Creating Models
     if args.net_g_ts:
         model_registrar_g = ModelRegistrar(model_dir, args.device)
@@ -248,15 +250,15 @@ if __name__ == '__main__':
 
     print('Created Training Model.')
 
-    # eval_trajectron = None
-    # if args.eval_every is not None or args.vis_every is not None:
-    #     eval_trajectron = Trajectron(model_registrar,
-    #                                  hyperparams,
-    #                                  log_writer,
-    #                                  args.eval_device)
-    #     eval_trajectron.set_environment(eval_env)
-    #     # eval_trajectron.set_annealing_params()
-    # print('Created Evaluation Model.')
+    eval_trajectron = None
+    if args.eval_every is not None or args.vis_every is not None:
+        eval_trajectron = Trajectron(model_registrar,
+                                     hyperparams,
+                                     log_writer,
+                                     args.eval_device)
+        eval_trajectron.set_environment(eval_env)
+        # eval_trajectron.set_annealing_params()
+    print('Created Evaluation Model.')
 
     # ! Defining optimizers
     optimizer = dict()
@@ -274,10 +276,11 @@ if __name__ == '__main__':
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
                                                                        gamma=hyperparams['learning_decay_rate'])
     #  ! Classification criterion
-    criterion = nn.CrossEntropyLoss(reduce='none')
+    criterion = nn.CrossEntropyLoss(reduction='none')
 
     # ! Training loop
     train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
+    # cw_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
     eval_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
     #################################
     #           TRAINING            #
@@ -292,19 +295,22 @@ if __name__ == '__main__':
         train_dataset.augment = args.augment
         if epoch >= args.warm and args.gen:
             # Generation process and training with generated data
-            train_stats = train_gen_epoch(trajectron, trajectron_g, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+            train_stats = train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion,
                                           train_data_loader, hyperparams, args.device)
             for node_type in train_data_loader.keys():
                 SUCCESS[node_type][epoch-1, :, :] = train_stats[node_type]['t_success'].float()
-                print("Success rate metrics")
-                print(SUCCESS[node_type][epoch-1, -10:, :])
+                # print("Success rate metrics")
+                # print(SUCCESS[node_type][epoch-1, -10:, :])
                 np.save(model_dir + '/{node_type}_success.npy', SUCCESS[node_type].cpu().numpy())
         else:
             loss_epoch = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
                                      train_data_loader, epoch, hyperparams, log_writer, args.device)
             train_loss_df = train_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(loss_epoch)]], columns=[
                 'epoch', 'loss']), ignore_index=True)
+            # cw_loss_df = cw_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(cw_loss_epoch)]], columns=[
+            #     'epoch', 'loss']), ignore_index=True)        
         train_dataset.augment = False
+
 
         # if args.eval_every is not None or args.vis_every is not None:
         #     eval_trajectron.set_curr_iter(epoch)
@@ -346,5 +352,7 @@ if __name__ == '__main__':
             model_registrar.save_models(epoch, extra_tag)
     train_loss_df.to_csv('./training_logs/train_loss_%s_%s.csv' %
                          (args.log_tag, extra_tag), sep=";")
+    # cw_loss_df.to_csv('./training_logs/train_loss_%s_%s.csv' %
+    #                      (args.log_tag, extra_tag), sep=";")
     eval_loss_df.to_csv('./training_logs/eval_loss_%s_%s.csv' %
                         (args.log_tag, extra_tag), sep=";")
