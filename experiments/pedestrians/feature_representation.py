@@ -1,175 +1,34 @@
-from utils import prediction_output_to_trajectories
-from tqdm import tqdm
-from torch.utils.data import DataLoader, Dataset
-from sklearn.preprocessing import normalize
-from sklearn.manifold import TSNE
-from mpl_toolkits.mplot3d import Axes3D
-from model.trajectron_multi import Trajectron
-from model.model_registrar import ModelRegistrar
-from matplotlib import pyplot as plt
-import torch.distributions.multivariate_normal as torchdist
-import matplotlib.pyplot as plt
-import matplotlib
-import evaluation
-from copy import deepcopy
-import pickle
-import math
-import glob
-import copy
 import argparse
 import json
+import math
 import os
 import random
 import sys
+from copy import deepcopy
 
 import dill
+import matplotlib
+import matplotlib.pyplot as plt
 import numpy as np
-import pandas as pd
 import torch
+import torch.distributions.multivariate_normal as torchdist
+from matplotlib import pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
+from sklearn.manifold import TSNE
+from sklearn.preprocessing import normalize
+from torch.utils.data import DataLoader, Dataset
+from tqdm import tqdm
 
 sys.path.append("../../trajectron")
-
-
-sys.path.append("../../trajectron")
+from model.model_registrar import ModelRegistrar
+from model.trajectron_multi import Trajectron
+from utils import prediction_output_to_trajectories
 
 seed = 0
 np.random.seed(seed)
 torch.manual_seed(seed)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(seed)
-'''
-if __name__ == "__main__":
-    #######################################
-    #### Training Data  Representation ####
-    #######################################
-    with open(args.data_train, 'rb') as f:
-        env_train = dill.load(f, encoding='latin1')
-
-    kalman_classes = rebalance_bins(args.data_kalman)
-    import pdb; pdb.set_trace()
-    
-
-    eval_stg, hyperparams = load_model(args.model, env_train, ts=args.checkpoint)
-
-    if 'override_attention_radius' in hyperparams:
-        for attention_radius_override in hyperparams['override_attention_radius']:
-            node_type1, node_type2, attention_radius = attention_radius_override.split(' ')
-            env_train.attention_radius[(node_type1, node_type2)] = float(attention_radius)
-
-    scenes = env_train.scenes
-
-    print("-- Preparing Train Node Graph")
-    for scene in tqdm(scenes):
-        scene.calculate_scene_graph(env_train.attention_radius,
-                                    hyperparams['edge_addition_filter'],
-                                    hyperparams['edge_removal_filter'])
-
-    ph = hyperparams['prediction_horizon']
-    max_hl = hyperparams['maximum_history_length']
-
-    with torch.no_grad():
-        
-        ############### BEST OF 20 ###############
-        train_features_list = []
-        print("-- Evaluating Train best of 20")
-        for i, scene in enumerate(scenes):
-            print(f"---- Evaluating Train Scene {i + 1}/{len(scenes)}")
-            for t in tqdm(range(0, scene.timesteps, 10)):
-                timesteps = np.arange(t, t + 10)
-                predictions,features = eval_stg.predict(scene,timesteps,ph,num_samples=20,min_history_timesteps=7,min_future_timesteps=12,z_mode=False,gmm_mode=False,full_dist=False)
-                train_features_list.append(features)
-
-    train_features_list = [f for feature in train_features_list for f in feature if len(feature)!= 0] #some predictions are empty
-    train_feat = torch.cat(train_features_list, dim = 0)
-    import pdb; pdb.set_trace()
-    # #######################################
-    # ####     Val Data Representation   ####
-    # #######################################
-    # with open(args.data_val, 'rb') as f:
-    #     env_val = dill.load(f, encoding='latin1')
-
-    # eval_stg, hyperparams = load_model(args.model, env_val, ts=args.checkpoint)
-
-    # if 'override_attention_radius' in hyperparams:
-    #     for attention_radius_override in hyperparams['override_attention_radius']:
-    #         node_type1, node_type2, attention_radius = attention_radius_override.split(' ')
-    #         env_val.attention_radius[(node_type1, node_type2)] = float(attention_radius)
-
-    # scenes = env_val.scenes
-
-    # print("-- Preparing Val Node Graph")
-    # for scene in tqdm(scenes):
-    #     scene.calculate_scene_graph(env_val.attention_radius,
-    #                                 hyperparams['edge_addition_filter'],
-    #                                 hyperparams['edge_removal_filter'])
-
-    # ph = hyperparams['prediction_horizon']
-    # max_hl = hyperparams['maximum_history_length']
-
-    # with torch.no_grad():
-        
-    #     ############### BEST OF 20 ###############
-    #     val_features_list = []
-    #     print("-- Evaluating Val best of 20")
-    #     for i, scene in enumerate(scenes):
-    #         print(f"---- Evaluating Val Scene {i + 1}/{len(scenes)}")
-    #         for t in tqdm(range(0, scene.timesteps, 10)):
-    #             timesteps = np.arange(t, t + 10)
-    #             predictions,features = eval_stg.predict(scene,timesteps,ph,num_samples=20,min_history_timesteps=7,min_future_timesteps=12,z_mode=False,gmm_mode=False,full_dist=False)
-    #             val_features_list.append(features)
-                
-    # val_features_list = [f for feature in val_features_list for f in feature if len(feature)!= 0] #some predictions are empty
-    # val_feat = torch.cat(val_features_list, dim = 0)
-
-    #######################################
-    ####      TSNE Representation      ####
-    #######################################
-    #tsne_input = torch.cat((train_feat, val_feat), dim = 0)
-    tsne_input = train_feat
-    idx_train_tsne = train_feat.shape[0]
-    # train : tsne_input[:idx_train_tsne] , val: tsne_input[idx_train_tsne:]
-    tsne_input = tsne_input.numpy()
-
-    # metric: default is euclidean, 
-    # check perplexity, early_exaggeration, learning_rate
-    tsne_output = TSNE(n_components=2, init = 'pca', ).fit_transform(tsne_input)
-    #tsne_output_normalized = normalize (tsne_output, axis = 0) # l2 normalization of each feature
-    tsne_output_normalized = 2*((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) -1
-
-    import pdb; pdb.set_trace()
-    plt.scatter(tsne_output_normalized[:idx_train_tsne,0], tsne_output_normalized[:idx_train_tsne,1], label='train')
-
-    plt.scatter(tsne_output_normalized[idx_train_tsne:,0], tsne_output_normalized[idx_train_tsne:,1], label='val')
-    plt.legend(loc="best")
-    plt.savefig(os.path.join(args.output_path, args.output_tag + '_normalized_features.png'))
-
-    plt.cla()
-    plt.scatter(tsne_output[:idx_train_tsne,0], tsne_output[:idx_train_tsne,1], label='train')
-    plt.scatter(tsne_output[idx_train_tsne:,0], tsne_output[idx_train_tsne:,1], label='val')
-    plt.legend(loc="best")
-    plt.savefig(os.path.join(args.output_path, args.output_tag + '_features.png'))
-
-    ########### 3D TSNE ##########
-    tsne_output3D = TSNE(n_components=3, init = 'pca', ).fit_transform(tsne_input)
-    tsne_output_normalized3D = 2*((tsne_output3D - tsne_output3D.min(0)) / tsne_output3D.ptp(0)) -1
-
-    plt.cla()
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(tsne_output3D[:idx_train_tsne,0], tsne_output3D[:idx_train_tsne,1], -tsne_output3D[:idx_train_tsne,2], zdir='z', label= 'train')
-    ax.scatter(tsne_output3D[idx_train_tsne:, 0], tsne_output3D[idx_train_tsne:,1], -tsne_output3D[idx_train_tsne:,2], zdir='z', label= 'val')
-    plt.legend(loc="best")
-    plt.savefig(os.path.join(args.output_path, args.output_tag + '_3D_features.png'))
-
-    plt.cla()
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(tsne_output_normalized3D[:idx_train_tsne,0], tsne_output_normalized3D[:idx_train_tsne,1], -tsne_output_normalized3D[:idx_train_tsne,2], zdir='z', label= 'train')
-    ax.scatter(tsne_output_normalized3D[idx_train_tsne:, 0], tsne_output_normalized3D[idx_train_tsne:,1], -tsne_output_normalized3D[idx_train_tsne:,2], zdir='z', label= 'val')
-    plt.legend(loc="best")
-    plt.savefig(os.path.join(args.output_path, args.output_tag + '_normalized3D_features.png'))
-'''
-
 
 seed = 0
 np.random.seed(seed)
@@ -181,6 +40,7 @@ parser = argparse.ArgumentParser()
 parser.add_argument("--data", help="full path to data file", type=str)
 parser.add_argument("--model", help="path to model", type=str)
 parser.add_argument("--checkpoint", help="checkpoint", type=int)
+parser.add_argument("--chkpt_extra_tag", help="checkpoint extra tag", type=str, default=None)
 parser.add_argument("--tagplot", help="tag for plot", type=str)
 parser.add_argument("--save_output", type=str)
 
@@ -230,12 +90,12 @@ def rebalance_bins(scores):
         dic_compare[l] += 1
     kalman_classes = lbls
     class_count_dict = dic_compare
-    return kalman_classes
+    return kalman_classes, class_count_dict
 
 
-def load_model(model_dir, env, ts=100):
+def load_model(model_dir, env, ts=100, extra_tag=None):
     model_registrar = ModelRegistrar(model_dir, 'cpu')
-    model_registrar.load_models(ts)
+    model_registrar.load_models(ts, extra_tag )
     with open(os.path.join(model_dir, 'config.json'), 'r') as config_json:
         hyperparams = json.load(config_json)
 
@@ -342,7 +202,7 @@ if __name__ == "__main__":
     with open(args.data, 'rb') as f:
         env = dill.load(f, encoding='latin1')
 
-    eval_stg, hyperparams = load_model(args.model, env, ts=args.checkpoint)
+    eval_stg, hyperparams = load_model(args.model, env, ts=args.checkpoint, extra_tag=args.chkpt_extra_tag)
 
     if 'override_attention_radius' in hyperparams:
         for attention_radius_override in hyperparams['override_attention_radius']:
@@ -389,17 +249,15 @@ if __name__ == "__main__":
         print('Kalman (FDE): %.2f' % (np.mean(kalman_errors)))
 
         assert feat.shape[0] == kalman_errors.shape[0]
-        # with open(args.save_output + '.pkl', 'wb') as f_writer:
-        #    dill.dump(kalman_errors, f_writer)
-        kalman_classes = rebalance_bins(kalman_errors)
 
+        kalman_classes, class_count_dict = rebalance_bins(kalman_errors)
+        num_classes = len(class_count_dict)
+
+        import pdb; pdb.set_trace()
         #######################################
         ####      TSNE Representation      ####
         #######################################
-        #tsne_input = torch.cat((train_feat, val_feat), dim = 0)
         tsne_input = feat
-        #idx_train_tsne = train_feat.shape[0]
-        # train : tsne_input[:idx_train_tsne] , val: tsne_input[idx_train_tsne:]
         tsne_input = tsne_input.numpy()
 
         # metric: default is euclidean,
@@ -410,7 +268,11 @@ if __name__ == "__main__":
         tsne_output_normalized = 2*((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) - 1
 
         #colors = [(random.random(),random.random(),random.random()) for i in range(kalman_classes.max()+ 1) ]
-        colors = ['red', 'green', 'blue', 'purple', 'navy', 'brown', 'yellow', 'black', 'orange', 'pink', 'cyan', 'grey', 'lightgreen']
+        # list(matplotlib.colors.cnames.keys())
+        
+        all_colors = [color for color in list(matplotlib.colors.cnames.keys()) if 'white' not in str(color)]
+        colors = random.sample(all_colors, num_classes)
+        # colors = ['red', 'green', 'blue', 'purple', 'navy', 'brown', 'yellow', 'black', 'orange', 'pink', 'cyan', 'grey', 'lightgreen']
         fig = plt.figure(figsize=(8, 8))
         plt.scatter(tsne_output[:, 0], tsne_output[:, 1], c=kalman_classes, cmap=matplotlib.colors.ListedColormap(colors))
         labels = [i for i in range(kalman_classes.max()+1)]
@@ -418,16 +280,17 @@ if __name__ == "__main__":
         loc = np.arange(0, max(kalman_classes), max(kalman_classes)/float(len(colors)))
         cb.set_ticks(loc)
         cb.set_ticklabels(labels)
-        plt.savefig(args.tagplot+'.png')
+        figname = os.path.join(args.model, args.tagplot + '.png')
+        plt.savefig(figname)
         for label in labels:
             idx_label = np.where(kalman_classes == label)[0]
             tsne_output_label = tsne_output[idx_label, :]
             plt.clf()
             plt.scatter(tsne_output_label[:, 0], tsne_output_label[:, 1], c=colors[label])
-            plt.savefig(args.tagplot + '_class_' + str(label)+'.png')
+            figname = os.path.join(args.model, args.tagplot + '_class_' + str(label)+'.png')
+            plt.savefig(figname)
 
-        import pdb
-        pdb.set_trace()
+        import pdb; pdb.set_trace()
         # plt.scatter(tsne_output_normalized[:idx_train_tsne,0], tsne_output_normalized[:idx_train_tsne,1], label='train')
         # plt.scatter(tsne_output_normalized[idx_train_tsne:,0], tsne_output_normalized[idx_train_tsne:,1], label='val')
         # plt.legend(loc="best")
@@ -438,21 +301,19 @@ if __name__ == "__main__":
         # plt.legend(loc="best")
         # plt.savefig(os.path.join(args.output_path, args.output_tag + '_features.png'))
         ########### 3D TSNE ##########
-        tsne_output3D = TSNE(n_components=3, init='pca', ).fit_transform(tsne_input)
-        tsne_output_normalized3D = 2*((tsne_output3D - tsne_output3D.min(0)) / tsne_output3D.ptp(0)) - 1
-
-        plt.cla()
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(tsne_output3D[:idx_train_tsne, 0], tsne_output3D[:idx_train_tsne, 1], -tsne_output3D[:idx_train_tsne, 2], zdir='z', label='train')
-        ax.scatter(tsne_output3D[idx_train_tsne:, 0], tsne_output3D[idx_train_tsne:, 1], -tsne_output3D[idx_train_tsne:, 2], zdir='z', label='val')
-        plt.legend(loc="best")
-        plt.savefig(os.path.join(args.output_path, args.output_tag + '_3D_features.png'))
-
-        plt.cla()
-        fig = plt.figure()
-        ax = fig.add_subplot(111, projection='3d')
-        ax.scatter(tsne_output_normalized3D[:idx_train_tsne, 0], tsne_output_normalized3D[:idx_train_tsne, 1], -tsne_output_normalized3D[:idx_train_tsne, 2], zdir='z', label='train')
-        ax.scatter(tsne_output_normalized3D[idx_train_tsne:, 0], tsne_output_normalized3D[idx_train_tsne:, 1], -tsne_output_normalized3D[idx_train_tsne:, 2], zdir='z', label='val')
-        plt.legend(loc="best")
-        plt.savefig(os.path.join(args.output_path, args.output_tag + '_normalized3D_features.png'))
+        # tsne_output3D = TSNE(n_components=3, init='pca', ).fit_transform(tsne_input)
+        # tsne_output_normalized3D = 2*((tsne_output3D - tsne_output3D.min(0)) / tsne_output3D.ptp(0)) - 1
+        # plt.cla()
+        # fig = plt.figure()
+        # ax = fig.add_subplot(111, projection='3d')
+        # ax.scatter(tsne_output3D[:idx_train_tsne, 0], tsne_output3D[:idx_train_tsne, 1], -tsne_output3D[:idx_train_tsne, 2], zdir='z', label='train')
+        # ax.scatter(tsne_output3D[idx_train_tsne:, 0], tsne_output3D[idx_train_tsne:, 1], -tsne_output3D[idx_train_tsne:, 2], zdir='z', label='val')
+        # plt.legend(loc="best")
+        # plt.savefig(os.path.join(args.output_path, args.output_tag + '_3D_features.png'))
+        # plt.cla()
+        # fig = plt.figure()
+        # ax = fig.add_subplot(111, projection='3d')
+        # ax.scatter(tsne_output_normalized3D[:idx_train_tsne, 0], tsne_output_normalized3D[:idx_train_tsne, 1], -tsne_output_normalized3D[:idx_train_tsne, 2], zdir='z', label='train')
+        # ax.scatter(tsne_output_normalized3D[idx_train_tsne:, 0], tsne_output_normalized3D[idx_train_tsne:, 1], -tsne_output_normalized3D[idx_train_tsne:, 2], zdir='z', label='val')
+        # plt.legend(loc="best")
+        # plt.savefig(os.path.join(args.output_path, args.output_tag + '_normalized3D_features.png'))
