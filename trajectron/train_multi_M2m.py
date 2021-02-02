@@ -19,7 +19,7 @@ from tqdm import tqdm
 import evaluation
 import visualization
 from argument_parser import args
-from M2m_toolbox import train_epoch, train_gen_epoch
+from m2m_toolbox import train_epoch, train_gen_epoch
 from model.dataset import EnvironmentDataset, EnvironmentDatasetKalman, collate
 from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
@@ -120,10 +120,8 @@ if __name__ == '__main__':
         train_env = dill.load(f, encoding='latin1')
 
     for attention_radius_override in args.override_attention_radius:
-        node_type1, node_type2, attention_radius = attention_radius_override.split(
-            ' ')
-        train_env.attention_radius[(node_type1, node_type2)] = float(
-            attention_radius)
+        node_type1, node_type2, attention_radius = attention_radius_override.split(' ')
+        train_env.attention_radius[(node_type1, node_type2)] = float(attention_radius)
 
     if train_env.robot_type is None and hyperparams['incl_robot_node']:
         # TODO: Make more general, allow the user to specify?
@@ -149,11 +147,12 @@ if __name__ == '__main__':
     hyperparams['class_count'] = list(hyperparams['class_count_dic'].values())
     hyperparams['num_classes'] = len(hyperparams['class_count_dic'])
     # TODO Read these values from command line args
-    hyperparams['beta'] = 0.999
-    hyperparams['gamma'] = 0.9
-    hyperparams['lam'] = 0.2
-    hyperparams['step_size'] = 0.0025
-    hyperparams['attack_iter'] = 100
+    hyperparams['beta'] = 0.9 # (0.9, 0.99, 0.999) Lower -> bigger p accept
+    # lower acceptance bound on logit for g: L(g;x*,k)
+    hyperparams['gamma'] = 0.8 # (0.9, 0.99) Lower -> bigger p accept
+    hyperparams['lam'] = 0.1 # (0.01, 0.1, 0.5) Lower -> bigger p accept
+    hyperparams['step_size'] = 0.1
+    hyperparams['attack_iter'] = 10
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(args.device)
 
@@ -164,8 +163,8 @@ if __name__ == '__main__':
                                                      collate_fn=collate,
                                                      pin_memory=False if args.device is 'cpu' else True,
                                                      batch_size=args.batch_size,
-                                                     sampler=node_type_data_set.weighted_sampler,
-                                                    #  shuffle=True,
+                                                    #  sampler=node_type_data_set.weighted_sampler,
+                                                     shuffle=True,
                                                      num_workers=args.preprocess_workers)
         train_data_loader[node_type_data_set.node_type] = node_type_dataloader
 
@@ -178,10 +177,8 @@ if __name__ == '__main__':
             eval_env = dill.load(f, encoding='latin1')
 
         for attention_radius_override in args.override_attention_radius:
-            node_type1, node_type2, attention_radius = attention_radius_override.split(
-                ' ')
-            eval_env.attention_radius[(node_type1, node_type2)] = float(
-                attention_radius)
+            node_type1, node_type2, attention_radius = attention_radius_override.split(' ')
+            eval_env.attention_radius[(node_type1, node_type2)] = float(attention_radius)
 
         if eval_env.robot_type is None and hyperparams['incl_robot_node']:
             # TODO: Make more general, allow the user to specify?
@@ -267,14 +264,13 @@ if __name__ == '__main__':
         if node_type not in hyperparams['pred_state']:
             continue
         optimizer[node_type] = optim.Adam([{'params': model_registrar.get_all_but_name_match('map_encoder').parameters()},
-                                           {'params': model_registrar.get_name_match('map_encoder').parameters(), 'lr': 0.0008}], lr=hyperparams['learning_rate'])
+                                           {'params': model_registrar.get_name_match('map_encoder').parameters(), 'lr': 0.0008}], 
+                                           lr=hyperparams['learning_rate'])
         # Set Learning Rate
         if hyperparams['learning_rate_style'] == 'const':
-            lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(
-                optimizer[node_type], gamma=1.0)
+            lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type], gamma=1.0)
         elif hyperparams['learning_rate_style'] == 'exp':
-            lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
-                                                                       gamma=hyperparams['learning_decay_rate'])
+            lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type], gamma=hyperparams['learning_decay_rate'])
     #  ! Classification criterion
     criterion = nn.CrossEntropyLoss(reduction='none')
 
@@ -293,7 +289,7 @@ if __name__ == '__main__':
     for epoch in range(1, args.train_epochs + 1):
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
-        if epoch >= args.warm and args.gen:
+        if epoch >= args.warm + 1 and args.gen:
             # Generation process and training with generated data
             train_stats = train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion,
                                           train_data_loader, hyperparams, args.device)
