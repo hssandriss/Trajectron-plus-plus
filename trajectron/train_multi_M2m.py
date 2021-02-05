@@ -235,13 +235,15 @@ if __name__ == '__main__':
                                   log_writer,
                                   args.device)
         trajectron_g.set_environment(train_env)
-        extra_tag = "f_%s_%s_%s_%s_%s_%s_%s_%s_%s" % (hyperparams['beta'], hyperparams['gamma'], hyperparams['lam'],
-                                                      hyperparams['step_size'], hyperparams['attack_iter'],
-                                                      hyperparams['learning_rate'], str(args.batch_size),
-                                                      hyperparams['non_linearity'], hyperparams['data_loader_sampler'])
+        extra_tag = "f_%s_%s_%s_%s_%s_%s_%s_%s_%s_%s" % (hyperparams['beta'], hyperparams['gamma'], hyperparams['lam'],
+                                                         hyperparams['step_size'], hyperparams['attack_iter'],
+                                                         hyperparams['learning_rate'], str(args.batch_size),
+                                                         hyperparams['non_linearity'], hyperparams['data_loader_sampler'],
+                                                         hyperparams['num_classes'])
     else:
-        extra_tag = "g_%s_%s_%s_%s" % (hyperparams['learning_rate'], str(args.batch_size),
-                                       hyperparams['non_linearity'], hyperparams['data_loader_sampler'])
+        extra_tag = "g_%s_%s_%s_%s_%s" % (hyperparams['learning_rate'], str(args.batch_size),
+                                          hyperparams['non_linearity'], hyperparams['data_loader_sampler'],
+                                          hyperparams['num_classes'])
     # Load pretrained model on multi hypothesis
     model_registrar = ModelRegistrar(model_dir, args.device)
     model_registrar.load_models(args.net_trajectron_ts)
@@ -283,7 +285,7 @@ if __name__ == '__main__':
     #################################
     #           TRAINING            #
     #################################
-    print(bcolors.UNDERLINE + "Trained Model Extra_tag:" + bcolors.ENDC)
+    print(bcolors.UNDERLINE + "Trained Model Extra_Tag:" + bcolors.ENDC)
     print(bcolors.OKGREEN + extra_tag + bcolors.ENDC)
     curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
     train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
@@ -303,5 +305,4 @@ if __name__ == '__main__':
 
         if args.save_every is not None and epoch % args.save_every == 0:
             model_registrar.save_models(epoch, extra_tag)
-    train_loss_df.to_csv('./training_logs/train_loss_%s_%s.csv' %
-                         (args.log_tag, extra_tag), sep=";")
+    train_loss_df.to_csv('./training_logs/train_loss_%s_%s.csv' % (args.log_tag, extra_tag), sep=";")

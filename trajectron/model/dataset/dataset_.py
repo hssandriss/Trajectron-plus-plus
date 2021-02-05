@@ -105,9 +105,9 @@ class NodeTypeDatasetKalman(data.Dataset):
                 num_samples=len(self.class_weights_all),
                 replacement=True
             )
-    
+
     # def smote(self):
-    #     # data -> (first_history_index, x_t, y_t, x_st_t, y_st_t, 
+    #     # data -> (first_history_index, x_t, y_t, x_st_t, y_st_t,
     #     # neighbors_data_st, neighbors_edge_value, robot_traj_st_t, map_tuple)
     #     # TODO: find a way to use SMOTE -> reason on the encoded tensor?
     #     n_class = len(self.class_count_dict)
@@ -137,9 +137,8 @@ class NodeTypeDatasetKalman(data.Dataset):
     #             aug_label.append(k)
     #     return np.array(aug_data), np.array(aug_label)
 
-    
-
     def rebalance_bins(self):
+        # TODO Use 1 spaced clusters
         env_name = self.env.scenes[0].name
         with open(os.path.join(self.scores_path, '%s_kalman.pkl' % env_name), 'rb') as f:
             scores = dill.load(f)
@@ -156,19 +155,19 @@ class NodeTypeDatasetKalman(data.Dataset):
             done = False
             i = lbls.max()
             while i > 0 and not done:  # left 0.7 percent
-                if sum_ + dic_[i] >= scores.shape[0]*0.007:
+                if sum_ + dic_[i] >= scores.shape[0] * 0.007:
                     done = True
                 else:
                     sum_ += dic_[i]
                     del (dic_[i])
                     i -= 1
-            dic_[i+1] = sum_
+            dic_[i + 1] = sum_
 
             original_keys = dic_.keys()
             original_keys = list(original_keys)
             new_keys = sorted(original_keys, key=lambda x: dic_[x], reverse=True)
             switched_dic = {new_keys[k]: k for k in range(len(original_keys))}
-            minority_class = i+1
+            minority_class = i + 1
             assert sum(dic_.values()) == scores.shape[0]
             class_count = [*dic_.values()]
             class_weights = 1. / torch.tensor(class_count, dtype=torch.float)
@@ -203,7 +202,8 @@ class NodeTypeDatasetKalman(data.Dataset):
             self.scores = dill.load(f)
         # with open('/home/makansio/raid21/Trajectron-EWTA/experiments/pedestrians/%s_deter_multi.pkl' % env_name, 'rb') as f:
         #     self.scores = dill.load(f)
-        assert self.scores.shape[0] == len(self.index), 'Loaded scores should match the current dataset (%d vs %d)' % (self.scores.shape[0], len(self.index))
+        assert self.scores.shape[0] == len(self.index), 'Loaded scores should match the current dataset (%d vs %d)' % (
+            self.scores.shape[0], len(self.index))
 
     def __len__(self):
         return self.len
