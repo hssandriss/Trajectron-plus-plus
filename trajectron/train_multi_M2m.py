@@ -19,7 +19,7 @@ from tqdm import tqdm
 import evaluation
 import visualization
 from argument_parser import args
-from m2m_toolbox import train_epoch, train_gen_epoch
+from m2m_toolbox import bcolors, train_epoch, train_gen_epoch
 from model.dataset import EnvironmentDataset, EnvironmentDatasetKalman, collate
 from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
@@ -147,12 +147,14 @@ if __name__ == '__main__':
     hyperparams['class_count'] = list(hyperparams['class_count_dic'].values())
     hyperparams['num_classes'] = len(hyperparams['class_count_dic'])
     # TODO Read these values from command line args
-    hyperparams['beta'] = 0.9 # (0.9, 0.99, 0.999) Lower -> bigger p accept
+    hyperparams['beta'] = 0.9  # (0.9, 0.99, 0.999) Lower -> bigger p accept
     # lower acceptance bound on logit for g: L(g;x*,k)
-    hyperparams['gamma'] = 0.8 # (0.9, 0.99) Lower -> bigger p accept
-    hyperparams['lam'] = 0.1 # (0.01, 0.1, 0.5) Lower -> bigger p accept
+    hyperparams['gamma'] = 0.8  # (0.9, 0.99) Lower -> bigger p accept
+    hyperparams['lam'] = 0.1  # (0.01, 0.1, 0.5) Lower -> bigger p accept
     hyperparams['step_size'] = 0.1
     hyperparams['attack_iter'] = 10
+    hyperparams['non_linearity'] = 'relu'
+    hyperparams['data_loader_sampler'] = 'random'
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(args.device)
 
@@ -163,7 +165,7 @@ if __name__ == '__main__':
                                                      collate_fn=collate,
                                                      pin_memory=False if args.device is 'cpu' else True,
                                                      batch_size=args.batch_size,
-                                                    #  sampler=node_type_data_set.weighted_sampler,
+                                                     #  sampler=node_type_data_set.weighted_sampler,
                                                      shuffle=True,
                                                      num_workers=args.preprocess_workers)
         train_data_loader[node_type_data_set.node_type] = node_type_dataloader
@@ -207,7 +209,7 @@ if __name__ == '__main__':
                                                          shuffle=True,
                                                          num_workers=args.preprocess_workers)
             eval_data_loader[node_type_data_set.node_type] = node_type_dataloader
-    # TODO Assert if the number of classes are the same for training, eval, test
+    # TODO Make sure that the number of classes are the same for training, eval, test
         print(f"Loaded evaluation data from {eval_data_path}")
     # ! Offline Calculate Scene Graph
     if hyperparams['offline_scene_graph'] == 'yes':
@@ -217,7 +219,7 @@ if __name__ == '__main__':
                                         hyperparams['edge_addition_filter'],
                                         hyperparams['edge_removal_filter'])
             print(f"Created Scene Graph for Training Scene {i}")
-        
+
         if args.eval_every is not None or args.vis_every is not None:
             for i, scene in enumerate(eval_scenes):
                 scene.calculate_scene_graph(eval_env.attention_radius,
@@ -227,15 +229,19 @@ if __name__ == '__main__':
     # ! Creating Models
     if args.net_g_ts:
         model_registrar_g = ModelRegistrar(model_dir, args.device)
-        model_registrar_g.load_models(args.net_g_ts, "g")
+        model_registrar_g.load_models(args.net_g_ts, args.net_g_extra_tag)
         trajectron_g = Trajectron(model_registrar_g,
                                   hyperparams,
                                   log_writer,
                                   args.device)
         trajectron_g.set_environment(train_env)
-        extra_tag = "f"
+        extra_tag = "f_%s_%s_%s_%s_%s_%s_%s_%s_%s" % (hyperparams['beta'], hyperparams['gamma'], hyperparams['lam'],
+                                                      hyperparams['step_size'], hyperparams['attack_iter'],
+                                                      hyperparams['learning_rate'], str(args.batch_size),
+                                                      hyperparams['non_linearity'], hyperparams['data_loader_sampler'])
     else:
-        extra_tag = "g"
+        extra_tag = "g_%s_%s_%s_%s" % (hyperparams['learning_rate'], str(args.batch_size),
+                                       hyperparams['non_linearity'], hyperparams['data_loader_sampler'])
     # Load pretrained model on multi hypothesis
     model_registrar = ModelRegistrar(model_dir, args.device)
     model_registrar.load_models(args.net_trajectron_ts)
@@ -254,7 +260,6 @@ if __name__ == '__main__':
                                      log_writer,
                                      args.eval_device)
         eval_trajectron.set_environment(eval_env)
-        # eval_trajectron.set_annealing_params()
     print('Created Evaluation Model.')
 
     # ! Defining optimizers
@@ -264,28 +269,24 @@ if __name__ == '__main__':
         if node_type not in hyperparams['pred_state']:
             continue
         optimizer[node_type] = optim.Adam([{'params': model_registrar.get_all_but_name_match('map_encoder').parameters()},
-                                           {'params': model_registrar.get_name_match('map_encoder').parameters(), 'lr': 0.0008}], 
-                                           lr=hyperparams['learning_rate'])
+                                           {'params': model_registrar.get_name_match('map_encoder').parameters(), 'lr': 0.0008}],
+                                          lr=hyperparams['learning_rate'], weight_decay=5e-5)
         # Set Learning Rate
         if hyperparams['learning_rate_style'] == 'const':
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type], gamma=1.0)
         elif hyperparams['learning_rate_style'] == 'exp':
-            lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type], gamma=hyperparams['learning_decay_rate'])
+            lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(
+                optimizer[node_type], gamma=hyperparams['learning_decay_rate'])
     #  ! Classification criterion
     criterion = nn.CrossEntropyLoss(reduction='none')
 
-    # ! Training loop
-    train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
-    # cw_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
-    eval_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
     #################################
     #           TRAINING            #
     #################################
-    curr_iter_node_type = {
-        node_type: 0 for node_type in train_data_loader.keys()}
-    SUCCESS = {
-        node_type: torch.zeros(args.train_epochs, hyperparams['num_classes'], 2)
-        for node_type in train_data_loader.keys()}
+    print(bcolors.UNDERLINE + "Trained Model Extra_tag:" + bcolors.ENDC)
+    print(bcolors.OKGREEN + extra_tag + bcolors.ENDC)
+    curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
+    train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
     for epoch in range(1, args.train_epochs + 1):
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
@@ -293,62 +294,14 @@ if __name__ == '__main__':
             # Generation process and training with generated data
             train_stats = train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion,
                                           train_data_loader, hyperparams, args.device)
-            for node_type in train_data_loader.keys():
-                SUCCESS[node_type][epoch-1, :, :] = train_stats[node_type]['t_success'].float()
-                # print("Success rate metrics")
-                # print(SUCCESS[node_type][epoch-1, -10:, :])
-                np.save(model_dir + '/{node_type}_success.npy', SUCCESS[node_type].cpu().numpy())
         else:
             loss_epoch = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
                                      train_data_loader, epoch, hyperparams, log_writer, args.device)
-            train_loss_df = train_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(loss_epoch)]], columns=[
-                'epoch', 'loss']), ignore_index=True)
-            # cw_loss_df = cw_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(cw_loss_epoch)]], columns=[
-            #     'epoch', 'loss']), ignore_index=True)        
+            train_loss_df = train_loss_df.append(pd.DataFrame(
+                data=[[epoch, np.mean(loss_epoch)]], columns=['epoch', 'loss']), ignore_index=True)
         train_dataset.augment = False
-
-
-        # if args.eval_every is not None or args.vis_every is not None:
-        #     eval_trajectron.set_curr_iter(epoch)
-
-        #################################
-        #           EVALUATION          #
-        #################################
-        # if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
-        #     max_hl = hyperparams['maximum_history_length']
-        #     ph = hyperparams['prediction_horizon']
-        #     model_registrar.to(args.eval_device)
-        #     with torch.no_grad():
-        #         # Calculate evaluation loss
-        #         for node_type, data_loader in eval_data_loader.items():
-        #             eval_loss = []
-        #             print(
-        #                 f"Starting Multi Hyp Evaluation @ epoch {epoch} for node type: {node_type}")
-        #             pbar = tqdm(data_loader, ncols=80)
-        #             loss_epoch = []
-        #             for batch in pbar:
-        #                 eval_loss_node_type = eval_trajectron.eval_loss(
-        #                     batch, node_type)
-        #                 pbar.set_description(
-        #                     f"Epoch {epoch}, {node_type} L: {eval_loss_node_type.item():.2f}")
-        #                 loss_epoch.append(eval_loss_node_type.item())
-
-        #                 eval_loss.append(
-        #                     {node_type: {'wta': [eval_loss_node_type]}})
-        #                 del batch
-        #             eval_loss_df = eval_loss_df.append(pd.DataFrame(
-        #                 [[epoch, np.mean(loss_epoch)]], columns=['epoch', 'loss']), ignore_index=True)
-
-        #             evaluation.log_batch_errors(eval_loss,
-        #                                         log_writer,
-        #                                         f"{node_type}/eval_loss",
-        #                                         epoch)
 
         if args.save_every is not None and epoch % args.save_every == 0:
             model_registrar.save_models(epoch, extra_tag)
     train_loss_df.to_csv('./training_logs/train_loss_%s_%s.csv' %
                          (args.log_tag, extra_tag), sep=";")
-    # cw_loss_df.to_csv('./training_logs/train_loss_%s_%s.csv' %
-    #                      (args.log_tag, extra_tag), sep=";")
-    eval_loss_df.to_csv('./training_logs/eval_loss_%s_%s.csv' %
-                        (args.log_tag, extra_tag), sep=";")

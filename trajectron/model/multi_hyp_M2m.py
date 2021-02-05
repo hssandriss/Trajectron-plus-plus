@@ -344,8 +344,8 @@ class MultiHypothesisNet(object):
                 if self.log_writer and (self.curr_iter + 1) % 500 == 0:
                     map_clone = map.clone()
                     map_patch = self.hyperparams['map_encoder'][self.node_type]['patch_size']
-                    map_clone[:, :, map_patch[1]-5:map_patch[1] +
-                              5, map_patch[0]-5:map_patch[0]+5] = 1.
+                    map_clone[:, :, map_patch[1] - 5:map_patch[1] +
+                              5, map_patch[0] - 5:map_patch[0] + 5] = 1.
                     self.log_writer.add_images(f"{self.node_type}/cropped_maps", map_clone,
                                                self.curr_iter, dataformats='NCWH')
 
@@ -592,7 +592,9 @@ class MultiHypothesisNet(object):
         initial_mu_model = self.node_modules[self.node_type + '/decoder/initial_mu']
         logits_model = self.node_modules[self.node_type + '/decoder/kalman_logits']
         initial_h = initial_h_model(x)
+        initial_h = F.relu(initial_h)
         initial_mu = initial_mu_model(n_s_t0)
+        initial_mu = F.relu(initial_mu)
 
         if self.hyperparams['incl_robot_node']:
             input_ = torch.cat([x, initial_mu, x_nr_t], dim=1)

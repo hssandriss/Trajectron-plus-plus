@@ -187,6 +187,10 @@ parser.add_argument('--net_g_ts',
                     help='Checkpoint to load for model g',
                     type=int)
 
+parser.add_argument('--net_g_extra_tag',
+                    help='Checkpoint extra_tag to load for model g',
+                    type=int)
+
 parser.add_argument('--net_trajectron_ts',
                     help='Checkpoint to load for model trajectron',
                     type=int)
