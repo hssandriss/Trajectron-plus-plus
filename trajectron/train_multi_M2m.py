@@ -155,6 +155,7 @@ if __name__ == '__main__':
     hyperparams['attack_iter'] = 10
     hyperparams['non_linearity'] = 'relu'
     hyperparams['data_loader_sampler'] = 'random'
+    # hyperparams['learning_rate'] = 0.001 # Override lr
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(args.device)
 
