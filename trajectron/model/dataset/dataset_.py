@@ -66,8 +66,6 @@ class NodeTypeDatasetKalman(data.Dataset):
         self.edge_types = [edge_type for edge_type in env.get_edge_types() if edge_type[0] is node_type]
         self.load_scores()
         self.rebalance_bins()
-        # self.smote()
-        # import pdb; pdb.set_trace()
 
     def index_env(self, node_freq_mult, scene_freq_mult, **kwargs):
         index = list()
@@ -142,58 +140,68 @@ class NodeTypeDatasetKalman(data.Dataset):
         env_name = self.env.scenes[0].name
         with open(os.path.join(self.scores_path, '%s_kalman.pkl' % env_name), 'rb') as f:
             scores = dill.load(f)
-            n = scores.shape[0]
-            beta = (n - 1) / n
             lbls = (scores / 0.5).astype(np.int)
+
+            # Calculating class values counts
             dic = {}
             for i in range(lbls.max() + 1):
                 dic[i] = 0
             for l in lbls:
                 dic[l] += 1
-            dic_ = deepcopy(dic)
-            sum_ = 0
-            done = False
-            i = lbls.max()
-            while i > 0 and not done:  # left 0.7 percent
-                if sum_ + dic_[i] >= scores.shape[0] * 0.007:
-                    done = True
-                else:
-                    sum_ += dic_[i]
-                    del (dic_[i])
-                    i -= 1
-            dic_[i + 1] = sum_
 
-            original_keys = dic_.keys()
-            original_keys = list(original_keys)
-            new_keys = sorted(original_keys, key=lambda x: dic_[x], reverse=True)
-            switched_dic = {new_keys[k]: k for k in range(len(original_keys))}
-            minority_class = i + 1
-            assert sum(dic_.values()) == scores.shape[0]
-            class_count = [*dic_.values()]
-            class_weights = 1. / torch.tensor(class_count, dtype=torch.float)
-            for l in range(len(lbls)):
-                if lbls[l] > minority_class:
-                    lbls[l] = minority_class
-            for l in range(len(lbls)):
-                lbls[l] = switched_dic[lbls[l]]
+            # Stacking the right 0.7 percent into a class
+            # dic_ = deepcopy(dic)
+            # sum_ = 0
+            # done = False
+            # i = lbls.max()
+            # while i > 0 and not done:  # left 0.7 percent
+            #     if sum_ + dic_[i] >= scores.shape[0] * 0.007:
+            #         done = True
+            #     else:
+            #         sum_ += dic_[i]
+            #         del (dic_[i])
+            #         i -= 1
+            # dic_[i + 1] = sum_
+            # minority_class = i + 1
+            # for l in range(len(lbls)):
+            #     if lbls[l] > minority_class:
+            #         lbls[l] = minority_class
 
-            dic_compare = {}
+            # Sorting classes lower has more data points
+            original_keys = list(dic.keys())
+            new_keys = sorted(original_keys, key=lambda x: dic[x], reverse=True)
+            sorting_dic = {new_keys[k]: k for k in range(len(original_keys))}
+
+            # Overwriting class values
+            for l in range(len(lbls)):
+                lbls[l] = sorting_dic[lbls[l]]
+
+            # Calculating class values counts after sorting
+            dic_sorted = {}
             for i in range(lbls.max() + 1):
-                dic_compare[i] = 0
+                dic_sorted[i] = 0
             for l in lbls:
-                dic_compare[l] += 1
+                dic_sorted[l] += 1
+            assert sum(dic_sorted.values()) == scores.shape[0]
 
+            # class weights .i.e sampling probability
+            class_count = [*dic_sorted.values()]
+            class_weights = 1. / torch.tensor(class_count, dtype=torch.float)
             self.class_weights_all = class_weights[lbls]
-            balanced_class_weights = (1 - beta) / (1 - torch.pow(beta, torch.tensor(class_count, dtype=torch.float)))
-            self.balanced_class_weights_all = balanced_class_weights[lbls]
             self.weighted_sampler = data.WeightedRandomSampler(
                 weights=self.class_weights_all,
                 num_samples=len(self.class_weights_all),
-                replacement=True
-            )
+                replacement=True)
+
+            # class weights based on effective number of samples
+            # https://arxiv.org/pdf/1901.05555.pdf
+            n = scores.shape[0]
+            beta = (n - 1) / n
+            balanced_class_weights = (1 - beta) / (1 - torch.pow(beta, torch.tensor(class_count, dtype=torch.float)))
+            self.balanced_class_weights_all = balanced_class_weights[lbls]
 
             self.kalman_classes = lbls
-            self.class_count_dict = dic_compare
+            self.class_count_dict = dic_sorted
 
     def load_scores(self):
         env_name = self.env.scenes[0].name
@@ -216,7 +224,7 @@ class NodeTypeDatasetKalman(data.Dataset):
             node = scene.get_node_by_id(node.id)
 
         sample = get_node_timestep_data(self.env, scene, t, node, self.state, self.pred_state,
-                                        self.edge_types, self.max_ht, self.max_ft, self.hyperparams) + (self.kalman_classes[i],)
+                                        self.edge_types, self.max_ht, self.max_ft, self.hyperparams) + (self.balanced_class_weights_all[i], self.kalman_classes[i])
         # scene = scene.augment()
         # node = scene.get_node_by_id(node.id)
         # sample_aug = get_node_timestep_data(self.env, scene, t, node, self.state, self.pred_state,

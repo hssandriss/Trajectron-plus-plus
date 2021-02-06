@@ -601,7 +601,7 @@ class MultiHypothesisNet(object):
         else:
             input_ = torch.cat([x, initial_mu], dim=1)
 
-        features = torch.cat([input_, initial_h], dim=1)
+        features = F.normalize(torch.cat([input_, initial_h], dim=1), dim=1)
         logits = logits_model(features)
         return logits, features
 

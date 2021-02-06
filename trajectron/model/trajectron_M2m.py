@@ -88,15 +88,13 @@ class Trajectron(object):
                                                          labels=y,
                                                          labels_st=y_st_t,
                                                          first_history_indices=first_history_index,
-                                                         neighbors=restore(
-                                                             neighbors_data_st),
-                                                         neighbors_edge_value=restore(
-                                                             neighbors_edge_value),
+                                                         neighbors=restore(neighbors_data_st),
+                                                         neighbors_edge_value=restore(neighbors_edge_value),
                                                          robot=robot_traj_st_t,
                                                          map=map)
         return (x, n_s_t0, x_nr_t)
 
-    def predict_kalman_class(self, x, n_s_t0, x_nr_t, node_type, normalize_weights=False):
+    def predict_kalman_class(self, x, n_s_t0, x_nr_t, node_type, normalize_weights=True):
         model = self.node_models_dict[node_type]
         # Weight normalization
         if normalize_weights:

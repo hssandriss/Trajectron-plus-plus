@@ -154,7 +154,7 @@ if __name__ == '__main__':
     hyperparams['step_size'] = 0.1
     hyperparams['attack_iter'] = 10
     hyperparams['non_linearity'] = 'relu'
-    hyperparams['data_loader_sampler'] = 'random'
+    hyperparams['data_loader_sampler'] = 'mixed'
     # hyperparams['learning_rate'] = 0.001 # Override lr
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(args.device)
@@ -289,21 +289,47 @@ if __name__ == '__main__':
     print(bcolors.UNDERLINE + "Trained Model Extra_Tag:" + bcolors.ENDC)
     print(bcolors.OKGREEN + extra_tag + bcolors.ENDC)
     curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
-    train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
+    # train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
+    generated, accuracies, losses = [], [], []
     for epoch in range(1, args.train_epochs + 1):
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
         if epoch >= args.warm + 1 and args.gen:
             # Generation process and training with generated data
-            train_stats = train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion,
-                                          train_data_loader, hyperparams, args.device)
+            train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+                                                                            train_data_loader, hyperparams, args.device)
+            generated.append(class_gen)
         else:
-            loss_epoch = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
-                                     train_data_loader, epoch, hyperparams, log_writer, args.device)
-            train_loss_df = train_loss_df.append(pd.DataFrame(
-                data=[[epoch, np.mean(loss_epoch)]], columns=['epoch', 'loss']), ignore_index=True)
+            loss_epoch, class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+                                                            train_data_loader, epoch, hyperparams, log_writer, args.device)
+            # train_loss_df = train_loss_df.append(pd.DataFrame(
+            #     data=[[epoch, np.mean(loss_epoch)]], columns=['epoch', 'loss']), ignore_index=True)
+
+        if not args.gen and epoch >= 25:
+            # Use now weighted sampler
+            train_data_loader = dict()
+            for node_type_data_set in train_dataset:
+                node_type_dataloader = utils.data.DataLoader(node_type_data_set,
+                                                             collate_fn=collate,
+                                                             pin_memory=False if args.device is 'cpu' else True,
+                                                             batch_size=args.batch_size,
+                                                             sampler=node_type_data_set.weighted_sampler,
+                                                             #  shuffle=True,
+                                                             num_workers=args.preprocess_workers)
+                train_data_loader[node_type_data_set.node_type] = node_type_dataloader
+
         train_dataset.augment = False
 
+        accuracies.append(class_acc)
+        losses.append(class_loss)
+
+        with open('accuracies_{extra_tag}.json', 'w') as fout:
+            json.dump(accuracies, fout)
+        with open('losses_{extra_tag}.json', 'w') as fout:
+            json.dump(losses, fout)
+        with open('generated_{extra_tag}.json', 'w') as fout:
+            json.dump(generated, fout)
         if args.save_every is not None and epoch % args.save_every == 0:
             model_registrar.save_models(epoch, extra_tag)
-    train_loss_df.to_csv('./training_logs/train_loss_%s_%s.csv' % (args.log_tag, extra_tag), sep=";")
+
+    # train_loss_df.to_csv('./training_logs/train_loss_%s_%s.csv' % (args.log_tag, extra_tag), sep=";")
