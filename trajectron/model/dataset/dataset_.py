@@ -21,6 +21,7 @@ class EnvironmentDatasetKalman(object):
         self.node_type_datasets = list()
         self.kalman_classes = list()
         self.class_count_dict = list()
+        self.class_weights = list()
 
         self._augment = False
         self.scores_path = scores_path
@@ -32,6 +33,7 @@ class EnvironmentDatasetKalman(object):
             self.node_type_datasets.append(node_type_dataset)
             self.kalman_classes.append(node_type_dataset.kalman_classes)
             self.class_count_dict.append(node_type_dataset.class_count_dict)
+            self.class_weights.append(node_type_dataset.balanced_class_weights)
 
     @property
     def augment(self):
@@ -197,8 +199,9 @@ class NodeTypeDatasetKalman(data.Dataset):
             # https://arxiv.org/pdf/1901.05555.pdf
             n = scores.shape[0]
             beta = (n - 1) / n
-            balanced_class_weights = (1 - beta) / (1 - torch.pow(beta, torch.tensor(class_count, dtype=torch.float)))
-            self.balanced_class_weights_all = balanced_class_weights[lbls]
+            self.balanced_class_weights = (
+                1 - beta) / (1 - torch.pow(beta, torch.tensor(class_count, dtype=torch.float)))
+            self.balanced_class_weights_all = self.balanced_class_weights[lbls]
 
             self.kalman_classes = lbls
             self.class_count_dict = dic_sorted

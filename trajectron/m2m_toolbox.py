@@ -38,7 +38,7 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
             trajectron.set_curr_iter(curr_iter)
             optimizer[node_type].zero_grad()
             x = batch[:-2]
-            weights = batch[-2].detach()
+            # weights = batch[-2].to(device)
             targets = batch[-1]
             targets = targets.to(device)
 
@@ -46,8 +46,7 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
             e_x = tuple(tensor.detach() if tensor is not None else None for tensor in e_x)
             x, n_s_t0, x_nr_t = e_x
             y_hat, features = trajectron.predict_kalman_class(x, n_s_t0, x_nr_t, node_type)
-            # https://arxiv.org/pdf/1901.05555.pdf
-            train_loss = weights * criterion(y_hat, targets)
+            train_loss = criterion(y_hat, targets)
             pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.mean().item():.2f}")
             loss_epoch.append(train_loss.mean().item())
             train_loss.mean().backward()
@@ -74,13 +73,13 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
                     class_acc[k].append(k_acc)
             curr_iter += 1
         curr_iter_node_type[node_type] = curr_iter
+        ret_class_acc = {k: round(np.mean(class_acc[k]), 3) for k in hyperparams['class_count_dic'].keys()}
+        ret_class_loss = {k: round(np.mean(class_loss[k]), 3) for k in hyperparams['class_count_dic'].keys()}
         print(bcolors.UNDERLINE + "Class Loss:" + bcolors.ENDC)
-        print(bcolors.OKGREEN + str({k: round(np.mean(class_loss[k]), 3)
-                                     for k in hyperparams['class_count_dic'].keys()}) + bcolors.ENDC)
+        print(bcolors.OKGREEN + str(ret_class_loss) + bcolors.ENDC)
         print(bcolors.UNDERLINE + "Class Acc:" + bcolors.ENDC)
-        print(bcolors.OKGREEN + str({k: round(np.mean(class_acc[k]), 3)
-                                     for k in hyperparams['class_count_dic'].keys()}) + bcolors.ENDC)
-    return np.mean(loss_epoch), class_acc, class_loss
+        print(bcolors.OKGREEN + str(ret_class_acc) + bcolors.ENDC)
+    return ret_class_acc, ret_class_loss
 
 
 def classwise_loss(outputs, targets):
@@ -192,7 +191,7 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
 
 
 def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs_orig_tuple,
-              targets_orig, weights, gen_idx, gen_targets, hyperparams, device):
+              targets_orig, gen_idx, gen_targets, hyperparams, device):
     class_gen_batch = {k: 0 for k in hyperparams['class_count_dic'].keys()}
     class_loss_batch = {k: 0 for k in hyperparams['class_count_dic'].keys()}
     class_acc_batch = {k: 0 for k in hyperparams['class_count_dic'].keys()}
@@ -255,7 +254,7 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     # Normal training for a minibatch
     optimizer[node_type].zero_grad()
     y_hat, features = trajectron.predict_kalman_class(x, n_s_t0, x_nr_t, node_type)
-    train_loss = weights * criterion(y_hat, targets)
+    train_loss = criterion(y_hat, targets)
     train_loss.mean().backward()
     # Clipping gradients.
     if hyperparams['grad_clip'] is not None:
@@ -337,7 +336,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
             x = batch[:-2]
-            weights = batch[-2]
+            # weights = batch[-2].to(device)
             targets = batch[-1]
             targets = targets.to(device)
             e_x = trajectron.encoded_x(x, node_type)
@@ -350,7 +349,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             gen_index = gen_index.view(-1)
             gen_targets = targets[gen_index]
             t_loss, g_loss, num_others, num_correct, num_gen, num_gen_correct, p_g_orig_batch, p_g_targ_batch, success, final_targets, m_count, class_gen_batch, class_loss_batch, class_acc_batch = train_net(
-                trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, e_x, targets, weights, gen_index, gen_targets, hyperparams, device)
+                trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, e_x, targets, gen_index, gen_targets, hyperparams, device)
             # Count for the modified batch
             pbar.set_description(
                 f"Epoch {epoch}, {node_type} #gen_correct: {int(num_gen_correct)} #m_count: {m_count} ")
@@ -386,15 +385,17 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
                                                      results[node_type]['gen_acc'], correct_gen, total_gen,
                                                      results[node_type]['p_g_orig'], results[node_type]['p_g_targ']
                                                      )
+        ret_class_gen = {k: int(np.sum(class_gen[k])) for k in hyperparams['class_count_dic'].keys()}
+        ret_class_acc = {k: round(np.mean(class_acc[k]), 3) for k in hyperparams['class_count_dic'].keys()}
+        ret_class_loss = {k: round(np.mean(class_loss[k]), 3) for k in hyperparams['class_count_dic'].keys()}
+
         print(bcolors.OKGREEN + msg + bcolors.ENDC)
         print(bcolors.UNDERLINE + "Class Gens:" + bcolors.ENDC)
-        print(bcolors.OKBLUE + str({k: int(np.sum(class_gen[k]))
-                                    for k in hyperparams['class_count_dic'].keys()}) + bcolors.ENDC)
+        print(bcolors.OKBLUE + str(ret_class_gen) + bcolors.ENDC)
         print(bcolors.UNDERLINE + "Class Loss:" + bcolors.ENDC)
-        print(bcolors.OKBLUE + str({k: round(np.mean(class_loss[k]), 3)
-                                    for k in hyperparams['class_count_dic'].keys()}) + bcolors.ENDC)
+        print(bcolors.OKBLUE + str(ret_class_loss) + bcolors.ENDC)
         print(bcolors.UNDERLINE + "Class Acc:" + bcolors.ENDC)
-        print(bcolors.OKBLUE + str({k: round(np.mean(class_acc[k]), 3)
-                                    for k in hyperparams['class_count_dic'].keys()}) + bcolors.ENDC)
+        print(bcolors.OKBLUE + str(ret_class_acc) + bcolors.ENDC)
         print()
-    return results, class_acc, class_loss, class_gen
+
+    return results, ret_class_acc, ret_class_loss, ret_class_gen

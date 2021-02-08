@@ -1,3 +1,15 @@
+from tqdm import tqdm
+from torch.utils.data import DataLoader, Dataset
+from sklearn.preprocessing import normalize
+from sklearn.manifold import TSNE
+from mpl_toolkits.mplot3d import Axes3D
+from matplotlib import pyplot as plt
+import torch.distributions.multivariate_normal as torchdist
+import torch
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib
+import dill
 import argparse
 import json
 import math
@@ -6,23 +18,11 @@ import random
 import sys
 from copy import deepcopy
 
-import dill
-import matplotlib
-import matplotlib.pyplot as plt
-import numpy as np
-import torch
-import torch.distributions.multivariate_normal as torchdist
-from matplotlib import pyplot as plt
-from mpl_toolkits.mplot3d import Axes3D
-from sklearn.manifold import TSNE
-from sklearn.preprocessing import normalize
-from torch.utils.data import DataLoader, Dataset
-from tqdm import tqdm
-
 sys.path.append("../../trajectron")
+
+from utils import prediction_output_to_trajectories
 from model.model_registrar import ModelRegistrar
 from model.trajectron_multi import Trajectron
-from utils import prediction_output_to_trajectories
 
 seed = 0
 np.random.seed(seed)
@@ -61,19 +61,19 @@ def rebalance_bins(scores):
     done = False
     i = lbls.max()
     while i > 0 and not done:  # left 0.7 percent
-        if sum_ + dic_[i] >= scores.shape[0]*0.007:
+        if sum_ + dic_[i] >= scores.shape[0] * 0.007:
             done = True
         else:
             sum_ += dic_[i]
             del (dic_[i])
             i -= 1
-    dic_[i+1] = sum_
+    dic_[i + 1] = sum_
 
     original_keys = dic_.keys()
     original_keys = list(original_keys)
     new_keys = sorted(original_keys, key=lambda x: dic_[x], reverse=True)
     switched_dic = {new_keys[k]: k for k in range(len(original_keys))}
-    minority_class = i+1
+    minority_class = i + 1
     assert sum(dic_.values()) == scores.shape[0]
     class_count = [*dic_.values()]
     class_weights = 1. / torch.tensor(class_count, dtype=torch.float)
@@ -95,7 +95,7 @@ def rebalance_bins(scores):
 
 def load_model(model_dir, env, ts=100, extra_tag=None):
     model_registrar = ModelRegistrar(model_dir, 'cpu')
-    model_registrar.load_models(ts, extra_tag )
+    model_registrar.load_models(ts, extra_tag)
     with open(os.path.join(model_dir, 'config.json'), 'r') as config_json:
         hyperparams = json.load(config_json)
 
@@ -180,8 +180,8 @@ def get_kalman_filter_result(history):
     # predict into the future
     x_x[k + 1] = x_x[k] + v_x * 12
     x_y[k + 1] = x_y[k] + v_y * 12
-    P_x[k + 1] = P_x[k] + P_vx[k] * 12*12 + Q
-    P_y[k + 1] = P_y[k] + P_vy[k] * 12*12 + Q
+    P_x[k + 1] = P_x[k] + P_vx[k] * 12 * 12 + Q
+    P_y[k + 1] = P_y[k] + P_vy[k] * 12 * 12 + Q
     P_vx[k + 1] = P_vx[k] + Q
     P_vy[k + 1] = P_vy[k] + Q
 
@@ -194,14 +194,16 @@ def get_kalman_filter_result(history):
 def calculate_epe(pred, gt):
     diff_x = (gt[0] - pred[0]) * (gt[0] - pred[0])
     diff_y = (gt[1] - pred[1]) * (gt[1] - pred[1])
-    epe = math.sqrt(diff_x+diff_y)
+    epe = math.sqrt(diff_x + diff_y)
     return epe
 
 
 if __name__ == "__main__":
     with open(args.data, 'rb') as f:
         env = dill.load(f, encoding='latin1')
-
+    all_colors = [color for color in list(matplotlib.colors.cnames.keys()) if 'white' not in str(color)]
+    import pdb; pdb.set_trace()
+    # colors = random.sample(all_colors, num_classes)
     eval_stg, hyperparams = load_model(args.model, env, ts=args.checkpoint, extra_tag=args.chkpt_extra_tag)
 
     if 'override_attention_radius' in hyperparams:
@@ -265,19 +267,20 @@ if __name__ == "__main__":
         print('---------- Start TSNE ----------')
         tsne_output = TSNE(n_components=2, init='pca', ).fit_transform(tsne_input)
         # tsne_output_normalized = normalize (tsne_output, axis = 0) # l2 normalization of each feature
-        tsne_output_normalized = 2*((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) - 1
+        tsne_output_normalized = 2 * ((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) - 1
 
         #colors = [(random.random(),random.random(),random.random()) for i in range(kalman_classes.max()+ 1) ]
         # list(matplotlib.colors.cnames.keys())
-        
+
         all_colors = [color for color in list(matplotlib.colors.cnames.keys()) if 'white' not in str(color)]
         colors = random.sample(all_colors, num_classes)
         # colors = ['red', 'green', 'blue', 'purple', 'navy', 'brown', 'yellow', 'black', 'orange', 'pink', 'cyan', 'grey', 'lightgreen']
         fig = plt.figure(figsize=(8, 8))
-        plt.scatter(tsne_output[:, 0], tsne_output[:, 1], c=kalman_classes, cmap=matplotlib.colors.ListedColormap(colors))
-        labels = [i for i in range(kalman_classes.max()+1)]
+        plt.scatter(tsne_output[:, 0], tsne_output[:, 1], c=kalman_classes,
+                    cmap=matplotlib.colors.ListedColormap(colors))
+        labels = [i for i in range(kalman_classes.max() + 1)]
         cb = plt.colorbar()
-        loc = np.arange(0, max(kalman_classes), max(kalman_classes)/float(len(colors)))
+        loc = np.arange(0, max(kalman_classes), max(kalman_classes) / float(len(colors)))
         cb.set_ticks(loc)
         cb.set_ticklabels(labels)
         figname = os.path.join(args.model, args.tagplot + '.png')
@@ -287,7 +290,7 @@ if __name__ == "__main__":
             tsne_output_label = tsne_output[idx_label, :]
             plt.clf()
             plt.scatter(tsne_output_label[:, 0], tsne_output_label[:, 1], c=colors[label])
-            figname = os.path.join(args.model, args.tagplot + '_class_' + str(label)+'.png')
+            figname = os.path.join(args.model, args.tagplot + '_class_' + str(label) + '.png')
             plt.savefig(figname)
 
         import pdb; pdb.set_trace()
