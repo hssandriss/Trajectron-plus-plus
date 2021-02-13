@@ -18,6 +18,7 @@ models/
 *.cb2
 .*.lb
 *.pkl
+*.png
 
 ## Intermediate documents:
 *.dvi
