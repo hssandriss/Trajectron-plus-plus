@@ -3,8 +3,8 @@ import os
 import numpy as np
 import matplotlib.pyplot as plt
 
-file_name = "accuracies_g_0.001_64_relu_random_28.json"
-values_tag = "accuracy per class"
+file_name = "losses_g_0.001_64_relu_random_28.json"
+values_tag = "loss per class"
 val_type = values_tag.split(" ")[0]
 figdir = "plots/"
 figdir_name = file_name[:-5]

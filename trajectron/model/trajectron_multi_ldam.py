@@ -95,8 +95,7 @@ class Trajectron(object):
                                 labels=y,
                                 labels_st=y_st_t,
                                 neighbors=restore(neighbors_data_st),
-                                neighbors_edge_value=restore(
-                                    neighbors_edge_value),
+                                neighbors_edge_value=restore(neighbors_edge_value),
                                 robot=robot_traj_st_t,
                                 map=map,
                                 prediction_horizon=self.ph,

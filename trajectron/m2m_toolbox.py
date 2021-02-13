@@ -28,57 +28,69 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
                 train_data_loader, epoch, hyperparams, log_writer, device):
 
     trajectron.model_registrar.train()
+    
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
         loss_epoch = []
+        correct_epoch = 0
         class_loss = {k: [] for k in hyperparams['class_count_dic'].keys()}
-        class_acc = {k: [] for k in hyperparams['class_count_dic'].keys()}
+        class_correct = {k: 0 for k in hyperparams['class_count_dic'].keys()}
+        class_count_sampled = {k: 0 for k in hyperparams['class_count_dic'].keys()}
+        log_writer.add_scalar(f"{node_type}/classification_g/train/lr_scheduling", lr_scheduler[node_type].state_dict()['_last_lr'][0] , epoch)
         pbar = tqdm(data_loader, ncols=120)
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
             optimizer[node_type].zero_grad()
-            x = batch[:-2]
+            inputs = batch[:-2]
             # weights = batch[-2].to(device)
             targets = batch[-1]
             targets = targets.to(device)
-
-            e_x = trajectron.encoded_x(x, node_type)
-            e_x = tuple(tensor.detach() if tensor is not None else None for tensor in e_x)
-            x, n_s_t0, x_nr_t = e_x
-            y_hat, features = trajectron.predict_kalman_class(x, n_s_t0, x_nr_t, node_type)
+            # inputs_shape =[x[i].shape for i in range(5)]
+            
+            y_hat, features = trajectron.predict(inputs, node_type)
             train_loss = criterion(y_hat, targets)
             pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.mean().item():.2f}")
-            loss_epoch.append(train_loss.mean().item())
             train_loss.mean().backward()
             # Clipping gradients.
             if hyperparams['grad_clip'] is not None:
                 nn.utils.clip_grad_value_(trajectron.model_registrar.parameters(), hyperparams['grad_clip'])
             optimizer[node_type].step()
             # Stepping forward the learning rate scheduler and annealers.
-            lr_scheduler[node_type].step()
             # Per class metrics
             predicted = torch.argmax(F.softmax(y_hat, 1), 1)
+            loss_epoch.append(train_loss.clone().detach()) # [[bs, 1], [bs, 1]...]
+            correct_epoch +=(predicted==targets).sum().item()
             for k in hyperparams['class_count_dic'].keys():
                 k_idx = (targets == k)
+                class_count_sampled[k]+= k_idx.sum().item()
                 if k_idx.sum() == 0:
                     continue
                 else:
-                    k_loss = train_loss[k_idx].mean().item()
-                    k_total = k_idx.sum().item()
+                    k_loss = train_loss[k_idx].clone().detach()
                     k_targets = targets[k_idx]
                     k_pred = predicted[k_idx]
                     k_correct = (k_targets == k_pred).sum().item()
-                    k_acc = k_correct / k_total
                     class_loss[k].append(k_loss)
-                    class_acc[k].append(k_acc)
+                    class_correct[k] += k_correct
             curr_iter += 1
+        lr_scheduler[node_type].step()
         curr_iter_node_type[node_type] = curr_iter
-        ret_class_acc = {k: round(np.mean(class_acc[k]), 3) for k in hyperparams['class_count_dic'].keys()}
-        ret_class_loss = {k: round(np.mean(class_loss[k]), 3) for k in hyperparams['class_count_dic'].keys()}
-        print(bcolors.UNDERLINE + "Class Loss:" + bcolors.ENDC)
-        print(bcolors.OKGREEN + str(ret_class_loss) + bcolors.ENDC)
-        print(bcolors.UNDERLINE + "Class Acc:" + bcolors.ENDC)
-        print(bcolors.OKGREEN + str(ret_class_acc) + bcolors.ENDC)
+        # Logging 
+        loss = torch.cat(loss_epoch)
+        assert class_count_sampled == hyperparams['class_count_dic'], "You didn't go through all data"
+        log_writer.add_scalar(f"{node_type}/classification_g/train/loss", loss.mean().item(), epoch)
+        log_writer.add_scalar(f"{node_type}/classification_g/train/accuracy", correct_epoch/data_loader.dataset.len, epoch)
+        
+        ret_class_acc = {k: class_correct[k]/hyperparams['class_count_dic'][k] for k in hyperparams['class_count_dic'].keys()}
+        ret_class_loss = {k: torch.cat(class_loss[k]).mean().item() for k in hyperparams['class_count_dic'].keys()}
+        for k in hyperparams['class_count_dic'].keys():
+            log_writer.add_scalar(f"{node_type}/classification_g/train/loss_class_{k}", ret_class_loss[k], epoch)
+            log_writer.add_scalar(f"{node_type}/classification_g/train/accuracy_class_{k}", ret_class_acc[k], epoch)
+        
+        print("Epoch Loss: " + bcolors.OKGREEN + str(round(loss.mean().item(), 3)) + bcolors.ENDC)
+        print("Epoch Accuracy: " + bcolors.OKGREEN + str(round(correct_epoch/data_loader.dataset.len, 3)) + bcolors.ENDC)
+        print("Accuracy per class: ")
+        print(bcolors.OKGREEN + str({k: round(ret_class_acc[k], 3) for k in hyperparams['class_count_dic'].keys()}) + bcolors.ENDC)
     return ret_class_acc, ret_class_loss
 
 
@@ -313,7 +325,7 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
 
 
 def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion,
-                    train_data_loader, hyperparams, device):
+                    train_data_loader, hyperparams, log_writer, device):
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(device)
     trajectron.model_registrar.train()
@@ -377,6 +389,14 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             'p_g_targ': p_g_targ / total_gen,
             't_success': t_success
         }
+        log_writer.add_scalar(f"{node_type}/classification_f/train/train_loss", oth_loss / total_oth, epoch)
+        log_writer.add_scalar(f"{node_type}/classification_f/train/gen_loss", gen_loss / total_gen, epoch)
+        log_writer.add_scalar(f"{node_type}/classification_f/train/train_acc", 100. * correct_oth / total_oth, epoch)
+        log_writer.add_scalar(f"{node_type}/classification_f/train/gen_acc", 100. * correct_gen / total_gen, epoch)
+        log_writer.add_scalar(f"{node_type}/classification_f/train/p_g_orig", p_g_orig / total_gen, epoch)
+        log_writer.add_scalar(f"{node_type}/classification_f/train/p_g_targ",  p_g_targ / total_gen, epoch)
+        log_writer.add_scalar(f"{node_type}/classification_f/train/t_success",  t_success, epoch)
+
 
         msg = '%s | t_Loss: %.3f | g_Loss: %.3f | Acc: %.3f%% (%d/%d) | Acc_gen: %.3f%% (%d/%d) ' \
             '| Prob_orig: %.3f | Prob_targ: %.3f' % (str(node_type),
@@ -388,7 +408,11 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
         ret_class_gen = {k: int(np.sum(class_gen[k])) for k in hyperparams['class_count_dic'].keys()}
         ret_class_acc = {k: round(np.mean(class_acc[k]), 3) for k in hyperparams['class_count_dic'].keys()}
         ret_class_loss = {k: round(np.mean(class_loss[k]), 3) for k in hyperparams['class_count_dic'].keys()}
-
+        for k in hyperparams['class_count_dic'].keys():
+            log_writer.add_scalar(f"{node_type}/classification_f/train/loss_class_{k}", ret_class_loss[k], epoch)
+            log_writer.add_scalar(f"{node_type}/classification_f/train/accuracy_class_{k}", ret_class_acc[k], epoch)
+            log_writer.add_scalar(f"{node_type}/classification_f/train/gen_class_{k}", ret_class_gen[k], epoch)
+        
         print(bcolors.OKGREEN + msg + bcolors.ENDC)
         print(bcolors.UNDERLINE + "Class Gens:" + bcolors.ENDC)
         print(bcolors.OKBLUE + str(ret_class_gen) + bcolors.ENDC)
@@ -399,3 +423,103 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
         print()
 
     return results, ret_class_acc, ret_class_loss, ret_class_gen
+
+
+"""
+Author: Yonglong Tian (yonglong@mit.edu)
+Date: May 07, 2020
+"""
+from __future__ import print_function
+
+import torch
+import torch.nn as nn
+
+
+class SupConLoss(nn.Module):
+    """Supervised Contrastive Learning: https://arxiv.org/pdf/2004.11362.pdf.
+    It also supports the unsupervised contrastive loss in SimCLR"""
+    def __init__(self, temperature=0.07, contrast_mode='all',
+                 base_temperature=0.07):
+        super(SupConLoss, self).__init__()
+        self.temperature = temperature
+        self.contrast_mode = contrast_mode
+        self.base_temperature = base_temperature
+
+    def forward(self, features, labels=None, mask=None):
+        """Compute loss for model. If both `labels` and `mask` are None,
+        it degenerates to SimCLR unsupervised loss:
+        https://arxiv.org/pdf/2002.05709.pdf
+
+        Args:
+            features: hidden vector of shape [bsz, n_views, ...].
+            labels: ground truth of shape [bsz].
+            mask: contrastive mask of shape [bsz, bsz], mask_{i,j}=1 if sample j
+                has the same class as sample i. Can be asymmetric.
+        Returns:
+            A loss scalar.
+        """
+        device = (torch.device('cuda')
+                  if features.is_cuda
+                  else torch.device('cpu'))
+
+        if len(features.shape) < 3:
+            raise ValueError('`features` needs to be [bsz, n_views, ...],'
+                             'at least 3 dimensions are required')
+        if len(features.shape) > 3:
+            features = features.view(features.shape[0], features.shape[1], -1)
+
+        batch_size = features.shape[0]
+        if labels is not None and mask is not None:
+            raise ValueError('Cannot define both `labels` and `mask`')
+        elif labels is None and mask is None:
+            mask = torch.eye(batch_size, dtype=torch.float32).to(device)
+        elif labels is not None:
+            labels = labels.contiguous().view(-1, 1)
+            if labels.shape[0] != batch_size:
+                raise ValueError('Num of labels does not match num of features')
+            mask = torch.eq(labels, labels.T).float().to(device)
+        else:
+            mask = mask.float().to(device)
+
+        contrast_count = features.shape[1]
+        contrast_feature = torch.cat(torch.unbind(features, dim=1), dim=0)
+        if self.contrast_mode == 'one':
+            anchor_feature = features[:, 0]
+            anchor_count = 1
+        elif self.contrast_mode == 'all':
+            anchor_feature = contrast_feature
+            anchor_count = contrast_count
+        else:
+            raise ValueError('Unknown mode: {}'.format(self.contrast_mode))
+
+        # compute logits
+        anchor_dot_contrast = torch.div(
+            torch.matmul(anchor_feature, contrast_feature.T),
+            self.temperature)
+        # for numerical stability
+        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)
+        logits = anchor_dot_contrast - logits_max.detach()
+
+        # tile mask
+        mask = mask.repeat(anchor_count, contrast_count)
+        # mask-out self-contrast cases
+        logits_mask = torch.scatter(
+            torch.ones_like(mask),
+            1,
+            torch.arange(batch_size * anchor_count).view(-1, 1).to(device),
+            0
+        )
+        mask = mask * logits_mask
+
+        # compute log_prob
+        exp_logits = torch.exp(logits) * logits_mask
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
+
+        # compute mean of log-likelihood over positive
+        mean_log_prob_pos = (mask * log_prob).sum(1) / mask.sum(1)
+
+        # loss
+        loss = - (self.temperature / self.base_temperature) * mean_log_prob_pos
+        loss = loss.view(anchor_count, batch_size).mean()
+
+        return loss

@@ -8,7 +8,7 @@ import torch.distributions.multivariate_normal as torchdist
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
-import matplotlib
+import matplotlib as mpl
 import dill
 import argparse
 import json
@@ -38,6 +38,7 @@ if torch.cuda.is_available():
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--data", help="full path to data file", type=str)
+parser.add_argument("--data2", help="full path to data file", type=str)
 parser.add_argument("--model", help="path to model", type=str)
 parser.add_argument("--checkpoint", help="checkpoint", type=int)
 parser.add_argument("--chkpt_extra_tag", help="checkpoint extra tag", type=str, default=None)
@@ -47,50 +48,68 @@ parser.add_argument("--save_output", type=str)
 args = parser.parse_args()
 
 
-def rebalance_bins(scores):
-    n = scores.shape[0]
-    beta = (n - 1) / n
+def get_cmap(n, name='hsv'):
+    '''Returns a function that maps each index in 0, 1, ..., n-1 to a distinct 
+    RGB color; the keyword argument name must be a standard mpl colormap name.'''
+    return plt.cm.get_cmap(name, n)
+
+
+def rebalance_bins(scores, stack_right= 0.007, pred_num_classes=None):
+    # TODO Use 1 spaced clusters
     lbls = (scores / 0.5).astype(np.int)
+
+    # Calculating class values counts
     dic = {}
     for i in range(lbls.max() + 1):
         dic[i] = 0
     for l in lbls:
         dic[l] += 1
-    dic_ = deepcopy(dic)
-    sum_ = 0
-    done = False
-    i = lbls.max()
-    while i > 0 and not done:  # left 0.7 percent
-        if sum_ + dic_[i] >= scores.shape[0] * 0.007:
-            done = True
-        else:
-            sum_ += dic_[i]
-            del (dic_[i])
-            i -= 1
-    dic_[i + 1] = sum_
+    # Stacking the right 0.7 percent into a class
+    if pred_num_classes is not None and isinstance(pred_num_classes, int):
+        minority_class = pred_num_classes - 1
+        for l in range(len(lbls)):
+            if lbls[l] > minority_class:
+                lbls[l] = minority_class
+        for i in range(minority_class + 1, lbls.max()):
+            dic[minority_class]+= dic[i]
+            del(dic[i])
+    elif stack_right is not None and isinstance(stack_right, float):
+        dic_ = deepcopy(dic)
+        sum_ = 0
+        done = False
+        i = lbls.max()
+        verification_mask = (lbls==lbls.max())
+        while i > 0 and not done:  # left 0.7 percent
+            if sum_ + dic_[i] >= scores.shape[0] * stack_right:
+                done = True
+            else:
+                sum_ += dic_[i]
+                del (dic_[i])
+                i -= 1
+        dic_[i + 1] = sum_
+        minority_class = i + 1
+        for l in range(len(lbls)):
+            if lbls[l] > minority_class:
+                lbls[l] = minority_class
+        assert all(lbls[verification_mask] == minority_class)
+        dic = dic_
+    # Sorting classes lower has more data points
+    original_keys = list(dic.keys())
+    new_keys = sorted(original_keys, key=lambda x: dic[x], reverse=True)
+    sorting_dic = {new_keys[k]: k for k in range(len(original_keys))}
 
-    original_keys = dic_.keys()
-    original_keys = list(original_keys)
-    new_keys = sorted(original_keys, key=lambda x: dic_[x], reverse=True)
-    switched_dic = {new_keys[k]: k for k in range(len(original_keys))}
-    minority_class = i + 1
-    assert sum(dic_.values()) == scores.shape[0]
-    class_count = [*dic_.values()]
-    class_weights = 1. / torch.tensor(class_count, dtype=torch.float)
+    # Overwriting class values
     for l in range(len(lbls)):
-        if lbls[l] > minority_class:
-            lbls[l] = minority_class
-    for l in range(len(lbls)):
-        lbls[l] = switched_dic[lbls[l]]
+        lbls[l] = sorting_dic[lbls[l]]
 
-    dic_compare = {}
+    # Calculating class values counts after sorting
+    dic_sorted = {}
     for i in range(lbls.max() + 1):
-        dic_compare[i] = 0
+        dic_sorted[i] = 0
     for l in lbls:
-        dic_compare[l] += 1
-    kalman_classes = lbls
-    class_count_dict = dic_compare
-    return kalman_classes, class_count_dict
+        dic_sorted[l] += 1
+    assert sum(dic_sorted.values()) == scores.shape[0]
+    return lbls, dic_sorted
 
 
 def load_model(model_dir, env, ts=100, extra_tag=None):
@@ -199,18 +218,17 @@ def calculate_epe(pred, gt):
 
 
 if __name__ == "__main__":
+    import pdb; pdb.set_trace()
+
     with open(args.data, 'rb') as f:
         env = dill.load(f, encoding='latin1')
-    all_colors = [color for color in list(matplotlib.colors.cnames.keys()) if 'white' not in str(color)]
-    import pdb; pdb.set_trace()
-    # colors = random.sample(all_colors, num_classes)
+
     eval_stg, hyperparams = load_model(args.model, env, ts=args.checkpoint, extra_tag=args.chkpt_extra_tag)
 
     if 'override_attention_radius' in hyperparams:
         for attention_radius_override in hyperparams['override_attention_radius']:
             node_type1, node_type2, attention_radius = attention_radius_override.split(' ')
             env.attention_radius[(node_type1, node_type2)] = float(attention_radius)
-
     scenes = env.scenes
 
     print("-- Preparing Node Graph")
@@ -221,6 +239,31 @@ if __name__ == "__main__":
 
     ph = hyperparams['prediction_horizon']
     max_hl = hyperparams['maximum_history_length']
+
+
+    if args.data2:
+        with open(args.data2, 'rb') as f:
+            env2 = dill.load(f, encoding='latin1')
+        eval_stg2, hyperparams2 = load_model(args.model, env2, ts=args.checkpoint, extra_tag=args.chkpt_extra_tag)
+
+        if 'override_attention_radius' in hyperparams2:
+            for attention_radius_override in hyperparams2['override_attention_radius']:
+                node_type1, node_type2, attention_radius = attention_radius_override.split(' ')
+                env2.attention_radius[(node_type1, node_type2)] = float(attention_radius)
+        scenes2 = env2.scenes
+
+        print("-- Preparing Node Graph")
+        for scene in tqdm(scenes2):
+            scene.calculate_scene_graph(env2.attention_radius,
+                                        hyperparams2['edge_addition_filter'],
+                                        hyperparams2['edge_removal_filter'])
+        ph2 = hyperparams2['prediction_horizon']
+        max_hl2 = hyperparams2['maximum_history_length']
+
+
+
+    # colors = random.sample(all_colors, num_classes)
+
 
     with torch.no_grad():
         epes = []
@@ -249,74 +292,105 @@ if __name__ == "__main__":
 
         kalman_errors = np.array(epes)
         print('Kalman (FDE): %.2f' % (np.mean(kalman_errors)))
-
         assert feat.shape[0] == kalman_errors.shape[0]
-
-        kalman_classes, class_count_dict = rebalance_bins(kalman_errors)
+        kalman_classes, class_count_dict = rebalance_bins(kalman_errors, stack_right= 0.007, pred_num_classes=None)
         num_classes = len(class_count_dict)
+        # Subsampling from the training data
+        features_list = []
+        targets_list = []
+        min_nsamples = min([class_count_dict[k] for k in range(num_classes)])
+        for target in range(num_classes):
+            target_idx = np.squeeze((kalman_classes == target).nonzero())
+            sampled_idx = np.random.choice(target_idx, min_nsamples)
+            features_list.append(feat[sampled_idx])
+            targets_list.append(kalman_classes[sampled_idx])
+        feat = torch.cat(features_list, dim=0)
+        kalman_classes = np.concatenate(targets_list, axis=0)
+        print()
+        if args.data2:
+            epes = []
+            features_list = []
+            for i, scene in enumerate(scenes2):
+                print(f"---- Evaluating Scene {i + 1}/{len(scenes)}")
+                timesteps = np.arange(scene.timesteps)
+                predictions, features = eval_stg.predict(scene,
+                                                        timesteps,
+                                                        ph2,
+                                                        min_history_timesteps=7,  # if 'test' in args.data else 1,
+                                                        min_future_timesteps=12)
+                (prediction_dict, histories_dict, futures_dict) = prediction_output_to_trajectories(predictions,
+                                                                                                    scene.dt,
+                                                                                                    max_hl2,
+                                                                                                    ph2,
+                                                                                                    prune_ph_to_future=True)
+                for t in prediction_dict.keys():
+                    for node in prediction_dict[t].keys():
+                        z_future = get_kalman_filter_result(histories_dict[t][node])
+                        epe = calculate_epe(z_future, futures_dict[t][node][-1, :])
+                        epes.append(epe)
+                features_list.append(features)
+            feat2 = torch.cat([features_list[i][0] for i in range(len(features_list))], dim=0)
+            kalman_errors = np.array(epes)
+            print('Kalman (FDE): %.2f' % (np.mean(kalman_errors)))
+            assert feat2.shape[0] == kalman_errors.shape[0]
 
-        import pdb; pdb.set_trace()
+            kalman_classes2, _ = rebalance_bins(kalman_errors, stack_right=None, pred_num_classes=num_classes)
+
         #######################################
         ####      TSNE Representation      ####
         #######################################
+        print('---------- Start TSNE ----------')
         tsne_input = feat
         tsne_input = tsne_input.numpy()
-
-        # metric: default is euclidean,
-        # check perplexity, early_exaggeration, learning_rate
-        print('---------- Start TSNE ----------')
         tsne_output = TSNE(n_components=2, init='pca', ).fit_transform(tsne_input)
-        # tsne_output_normalized = normalize (tsne_output, axis = 0) # l2 normalization of each feature
         tsne_output_normalized = 2 * ((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) - 1
+        if args.data2:
+            tsne_input2 = feat2
+            tsne_input2 = tsne_input2.numpy()
+            tsne_output2 = TSNE(n_components=2, init='pca', ).fit_transform(tsne_input2)
+            tsne_output_normalized2 = 2 * ((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) - 1
+        
+        print("---------- Saving Plots ---------- ")
+        N = num_classes
+        # define the colormap
+        cmap = plt.cm.jet
+        # extract all colors from the .jet map
+        # cmaplist = [cmap(i) for i in range(0, cmap.N, cmap.N//N)]
+        cmaplist = [cmap(i) for i in range(cmap.N)]
+        # create the new map
+        cmap = cmap.from_list('Custom cmap', cmaplist, cmap.N)
+        # define the bins and normalize
+        bounds, step = np.linspace(0,N,N+1, retstep=True)
+        norm = mpl.colors.BoundaryNorm(bounds, cmap.N)
 
-        #colors = [(random.random(),random.random(),random.random()) for i in range(kalman_classes.max()+ 1) ]
-        # list(matplotlib.colors.cnames.keys())
-
-        all_colors = [color for color in list(matplotlib.colors.cnames.keys()) if 'white' not in str(color)]
-        colors = random.sample(all_colors, num_classes)
-        # colors = ['red', 'green', 'blue', 'purple', 'navy', 'brown', 'yellow', 'black', 'orange', 'pink', 'cyan', 'grey', 'lightgreen']
         fig = plt.figure(figsize=(8, 8))
-        plt.scatter(tsne_output[:, 0], tsne_output[:, 1], c=kalman_classes,
-                    cmap=matplotlib.colors.ListedColormap(colors))
-        labels = [i for i in range(kalman_classes.max() + 1)]
-        cb = plt.colorbar()
-        loc = np.arange(0, max(kalman_classes), max(kalman_classes) / float(len(colors)))
-        cb.set_ticks(loc)
-        cb.set_ticklabels(labels)
+        plt.scatter(tsne_output[:, 0], tsne_output[:, 1], c=kalman_classes, cmap=cmap, norm=norm)
+        cb = plt.colorbar(spacing='proportional',ticks=bounds)
+        cb.set_label('Kalman classes')
         figname = os.path.join(args.model, args.tagplot + '.png')
         plt.savefig(figname)
+        
+        labels = [i for i in range(num_classes)]
         for label in labels:
             idx_label = np.where(kalman_classes == label)[0]
             tsne_output_label = tsne_output[idx_label, :]
             plt.clf()
-            plt.scatter(tsne_output_label[:, 0], tsne_output_label[:, 1], c=colors[label])
+            plt.scatter(tsne_output_label[:, 0], tsne_output_label[:, 1], c=np.array([label for _ in range(len(idx_label))]), cmap=cmap, norm=norm)
             figname = os.path.join(args.model, args.tagplot + '_class_' + str(label) + '.png')
             plt.savefig(figname)
 
-        import pdb; pdb.set_trace()
-        # plt.scatter(tsne_output_normalized[:idx_train_tsne,0], tsne_output_normalized[:idx_train_tsne,1], label='train')
-        # plt.scatter(tsne_output_normalized[idx_train_tsne:,0], tsne_output_normalized[idx_train_tsne:,1], label='val')
-        # plt.legend(loc="best")
-        # plt.savefig(os.path.join(args.output_path, args.output_tag + '_normalized_features.png'))
-        # plt.cla()
-        # plt.scatter(tsne_output[:idx_train_tsne,0], tsne_output[:idx_train_tsne,1], label='train')
-        # plt.scatter(tsne_output[idx_train_tsne:,0], tsne_output[idx_train_tsne:,1], label='val')
-        # plt.legend(loc="best")
-        # plt.savefig(os.path.join(args.output_path, args.output_tag + '_features.png'))
-        ########### 3D TSNE ##########
-        # tsne_output3D = TSNE(n_components=3, init='pca', ).fit_transform(tsne_input)
-        # tsne_output_normalized3D = 2*((tsne_output3D - tsne_output3D.min(0)) / tsne_output3D.ptp(0)) - 1
-        # plt.cla()
-        # fig = plt.figure()
-        # ax = fig.add_subplot(111, projection='3d')
-        # ax.scatter(tsne_output3D[:idx_train_tsne, 0], tsne_output3D[:idx_train_tsne, 1], -tsne_output3D[:idx_train_tsne, 2], zdir='z', label='train')
-        # ax.scatter(tsne_output3D[idx_train_tsne:, 0], tsne_output3D[idx_train_tsne:, 1], -tsne_output3D[idx_train_tsne:, 2], zdir='z', label='val')
-        # plt.legend(loc="best")
-        # plt.savefig(os.path.join(args.output_path, args.output_tag + '_3D_features.png'))
-        # plt.cla()
-        # fig = plt.figure()
-        # ax = fig.add_subplot(111, projection='3d')
-        # ax.scatter(tsne_output_normalized3D[:idx_train_tsne, 0], tsne_output_normalized3D[:idx_train_tsne, 1], -tsne_output_normalized3D[:idx_train_tsne, 2], zdir='z', label='train')
-        # ax.scatter(tsne_output_normalized3D[idx_train_tsne:, 0], tsne_output_normalized3D[idx_train_tsne:, 1], -tsne_output_normalized3D[idx_train_tsne:, 2], zdir='z', label='val')
-        # plt.legend(loc="best")
-        # plt.savefig(os.path.join(args.output_path, args.output_tag + '_normalized3D_features.png'))
+        if args.data2:
+            plt.clf()
+            fig = plt.figure(figsize=(8, 8))
+            plt.scatter(tsne_output2[:, 0], tsne_output2[:, 1], c=kalman_classes2, cmap=cmap, norm=norm)
+            cb = plt.colorbar(spacing='proportional',ticks=bounds)
+            cb.set_label('Kalman classes')
+            figname = os.path.join(args.model, args.tagplot + '_data2.png')
+            plt.savefig(figname)
+            for label in labels:
+                idx_label = np.where(kalman_classes2 == label)[0]
+                tsne_output_label = tsne_output2[idx_label, :]
+                plt.clf()
+                plt.scatter(tsne_output_label[:, 0], tsne_output_label[:, 1], c=np.array([label for _ in range(len(idx_label))]), cmap=cmap, norm=norm)
+                figname = os.path.join(args.model, args.tagplot + '_class_' + str(label) + '_data2.png')
+                plt.savefig(figname)

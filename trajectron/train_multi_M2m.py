@@ -3,6 +3,7 @@ import os
 import pathlib
 import random
 import time
+from datetime import datetime
 import warnings
 
 import dill
@@ -12,7 +13,7 @@ import pandas as pd
 import torch
 import torch.nn.functional as F
 from tensorboardX import SummaryWriter
-from torch import nn, optim, utils
+from torch import log, nn, optim, utils
 from torch.utils.data.sampler import Sampler
 from tqdm import tqdm
 
@@ -103,13 +104,16 @@ if __name__ == '__main__':
 
     log_writer = None
     model_dir = None
+    model_tag = "_".join(["model_classification", datetime.now().strftime("%d_%m_%Y-%H_%M") , args.log_tag])
+
     if not args.debug:
         # Create the log and model directiory if they're not present.
-        model_dir = os.path.join(args.log_dir, args.experiment)
+        model_dir = os.path.join(args.log_dir, args.experiment, model_tag)
+        pathlib.Path(model_dir).mkdir(parents=True, exist_ok=True)
         # Save config to model directory
         with open(os.path.join(model_dir, 'config.json'), 'w') as conf_json:
             json.dump(hyperparams, conf_json)
-
+        
         log_writer = SummaryWriter(log_dir=model_dir)
 
     # Load training and evaluation environments and scenes
@@ -156,14 +160,17 @@ if __name__ == '__main__':
     hyperparams['attack_iter'] = 10
     hyperparams['non_linearity'] = 'relu'
     hyperparams['data_loader_sampler'] = 'random'
-    hyperparams['learning_rate'] = 0.001  # Override lr
-    import pdb; pdb.set_trace()
+    hyperparams['learning_rate_style'] = 'cosannw'
+
+    hyperparams['learning_rate'] = 0.01  # Override lr
+    # import pdb; pdb.set_trace()
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(args.device)
 
     train_data_loader = dict()
 
     for node_type_data_set in train_dataset:
+        log_writer.add_histogram(tag=f"{node_type_data_set.node_type}Kalman scores histogram", values=node_type_data_set.scores)
         node_type_dataloader = utils.data.DataLoader(node_type_data_set,
                                                      collate_fn=collate,
                                                      pin_memory=False if args.device is 'cpu' else True,
@@ -249,7 +256,8 @@ if __name__ == '__main__':
                                           hyperparams['num_classes'])
     # Load pretrained model on multi hypothesis
     model_registrar = ModelRegistrar(model_dir, args.device)
-    model_registrar.load_models(args.net_trajectron_ts)
+    if args.net_trajectron_ts:
+        model_registrar.load_models(args.net_trajectron_ts)
     trajectron = Trajectron(model_registrar,
                             hyperparams,
                             log_writer,
@@ -277,13 +285,15 @@ if __name__ == '__main__':
         optimizer[node_type] = optim.Adam([{'params': model_registrar.get_all_but_name_match('map_encoder').parameters()},
                                            {'params': model_registrar.get_name_match('map_encoder').parameters(), 'lr': 0.0008}],
                                           lr=hyperparams['learning_rate'])
-        # Set Learning Rate
+        # Set Learning Rate 
         if hyperparams['learning_rate_style'] == 'const':
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type], gamma=1.0)
         elif hyperparams['learning_rate_style'] == 'exp':
-            lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(
-                optimizer[node_type], gamma=hyperparams['learning_decay_rate'])
-        initial_lr_state[node_type] = lr_scheduler[node_type].state_dict()
+            lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type], gamma=hyperparams['learning_decay_rate'])
+        else:
+            print("Using Cosine Annealing With Warm Restarts as LR Scheduler")
+            lr_scheduler[node_type] = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer[node_type], T_0=10, T_mult=2)
+        # initial_lr_state[node_type] = lr_scheduler[node_type].state_dict()
 
     # Classification criterion
     # https://arxiv.org/pdf/1901.05555.pdf
@@ -293,8 +303,12 @@ if __name__ == '__main__':
     #################################
     #           TRAINING            #
     #################################
+    print()
     print(bcolors.UNDERLINE + "Trained Model Extra_Tag:" + bcolors.ENDC)
     print(bcolors.OKGREEN + extra_tag + bcolors.ENDC)
+    print(bcolors.UNDERLINE + "Class Count:" + bcolors.ENDC)
+    print(bcolors.OKGREEN + str(hyperparams['class_count_dic']) + bcolors.ENDC)
+    print()
     curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
     # train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
     generated, accuracies, losses = [], [], []
@@ -304,15 +318,16 @@ if __name__ == '__main__':
         if epoch >= args.warm + 1 and args.gen:
             # Generation process and training with generated data
             train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion,
-                                                                            train_data_loader, hyperparams, args.device)
+                                                                            train_data_loader, hyperparams,log_writer, args.device)
             generated.append({"epoch": epoch, "generated per class": class_gen})
+            
         else:
             class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
                                                 train_data_loader, epoch, hyperparams, log_writer, args.device)
-            # train_loss_df = train_loss_df.append(pd.DataFrame(
-            #     data=[[epoch, np.mean(loss_epoch)]], columns=['epoch', 'loss']), ignore_index=True)
 
-        # if not args.gen and epoch >= 20:
+        # if not args.gen and epoch >= 75:
+        #     criterion = nn.CrossEntropyLoss(reduction='none', weight=weight)
+
         #     # Use now weighted sampler
         #     train_data_loader = dict()
         #     for node_type_data_set in train_dataset:
@@ -332,14 +347,13 @@ if __name__ == '__main__':
         accuracies.append({"epoch": epoch, "accuracy per class": class_acc})
         losses.append({"epoch": epoch, "loss per class": class_loss})
 
-        with open(f'accuracies_{extra_tag}.json', 'w') as fout:
-            json.dump(accuracies, fout)
-        with open(f'losses_{extra_tag}.json', 'w') as fout:
-            json.dump(losses, fout)
-        with open(f'generated_{extra_tag}.json', 'w') as fout:
-            json.dump(generated, fout)
-
         if args.save_every is not None and epoch % args.save_every == 0:
             model_registrar.save_models(epoch, extra_tag)
+            with open(f'accuracies_{extra_tag}.json', 'w') as fout:
+                json.dump(accuracies, fout)
+            with open(f'losses_{extra_tag}.json', 'w') as fout:
+                json.dump(losses, fout)
+            with open(f'generated_{extra_tag}.json', 'w') as fout:
+                json.dump(generated, fout)
 
     # train_loss_df.to_csv('./training_logs/train_loss_%s_%s.csv' % (args.log_tag, extra_tag), sep=";")

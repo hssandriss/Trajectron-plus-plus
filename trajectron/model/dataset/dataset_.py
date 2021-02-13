@@ -11,7 +11,7 @@ from .preprocessing import get_node_timestep_data
 
 
 class EnvironmentDatasetKalman(object):
-    def __init__(self, env, scores_path, state, pred_state, node_freq_mult, scene_freq_mult, hyperparams, **kwargs):
+    def __init__(self, env, scores_path, state, pred_state, node_freq_mult, scene_freq_mult, hyperparams, stack_right=0.007, predifined_num_classes=None, **kwargs):
         self.env = env
         self.state = state
         self.pred_state = pred_state
@@ -29,7 +29,7 @@ class EnvironmentDatasetKalman(object):
             if node_type not in hyperparams['pred_state']:
                 continue
             node_type_dataset = NodeTypeDatasetKalman(env, scores_path, node_type, state, pred_state, node_freq_mult,
-                                                      scene_freq_mult, hyperparams, **kwargs)
+                                                      scene_freq_mult, hyperparams, stack_right=stack_right, predifined_num_classes=predifined_num_classes, **kwargs)
             self.node_type_datasets.append(node_type_dataset)
             self.kalman_classes.append(node_type_dataset.kalman_classes)
             self.class_count_dict.append(node_type_dataset.class_count_dict)
@@ -51,7 +51,7 @@ class EnvironmentDatasetKalman(object):
 
 class NodeTypeDatasetKalman(data.Dataset):
     def __init__(self, env, scores_path, node_type, state, pred_state, node_freq_mult,
-                 scene_freq_mult, hyperparams, augment=False, **kwargs):
+                 scene_freq_mult, hyperparams, augment=False, stack_right=0.007, predifined_num_classes=None, **kwargs):
         self.env = env
         self.state = state
         self.pred_state = pred_state
@@ -66,8 +66,9 @@ class NodeTypeDatasetKalman(data.Dataset):
         self.index = self.index_env(node_freq_mult, scene_freq_mult, **kwargs)
         self.len = len(self.index)
         self.edge_types = [edge_type for edge_type in env.get_edge_types() if edge_type[0] is node_type]
+        self.num_classes = predifined_num_classes
         self.load_scores()
-        self.rebalance_bins()
+        self.rebalance_bins(stack_right=stack_right)
 
     def index_env(self, node_freq_mult, scene_freq_mult, **kwargs):
         index = list()
@@ -106,38 +107,7 @@ class NodeTypeDatasetKalman(data.Dataset):
                 replacement=True
             )
 
-    # def smote(self):
-    #     # data -> (first_history_index, x_t, y_t, x_st_t, y_st_t,
-    #     # neighbors_data_st, neighbors_edge_value, robot_traj_st_t, map_tuple)
-    #     # TODO: find a way to use SMOTE -> reason on the encoded tensor?
-    #     n_class = len(self.class_count_dict)
-    #     targets = self.kalman_classes
-    #     n_max = max(self.class_count_dict.values())
-    #     aug_data = []
-    #     aug_label = []
-
-    #     for k in range(1, n_class):
-    #         indices = np.where(targets == k)[0]
-    #         class_len = len(indices)
-    #         class_dist = np.zeros((class_len, class_len))
-    #         import pdb; pdb.set_trace()
-    #         class_data = [self.__getitem__(i) for i in indices]
-    #         # Augmentation with SMOTE ( k-nearest )
-    #         for i in range(class_len):
-    #             for j in range(class_len):
-    #                 class_dist[i, j] = np.linalg.norm(class_data[i] - class_data[j])
-    #         sorted_idx = np.argsort(class_dist)
-
-    #         for i in range(n_max - class_len):
-    #             lam = nr.uniform(0, 1)
-    #             row_idx = i % class_len
-    #             col_idx = int((i - row_idx) / class_len) % (class_len - 1)
-    #             new_data = np.round(lam * class_data[row_idx] + (1 - lam) * class_data[sorted_idx[row_idx, 1 + col_idx]])
-    #             aug_data.append(new_data.astype('uint8'))
-    #             aug_label.append(k)
-    #     return np.array(aug_data), np.array(aug_label)
-
-    def rebalance_bins(self):
+    def rebalance_bins(self, stack_right):
         # TODO Use 1 spaced clusters
         env_name = self.env.scenes[0].name
         with open(os.path.join(self.scores_path, '%s_kalman.pkl' % env_name), 'rb') as f:
@@ -150,25 +120,35 @@ class NodeTypeDatasetKalman(data.Dataset):
                 dic[i] = 0
             for l in lbls:
                 dic[l] += 1
-
             # Stacking the right 0.7 percent into a class
-            # dic_ = deepcopy(dic)
-            # sum_ = 0
-            # done = False
-            # i = lbls.max()
-            # while i > 0 and not done:  # left 0.7 percent
-            #     if sum_ + dic_[i] >= scores.shape[0] * 0.007:
-            #         done = True
-            #     else:
-            #         sum_ += dic_[i]
-            #         del (dic_[i])
-            #         i -= 1
-            # dic_[i + 1] = sum_
-            # minority_class = i + 1
-            # for l in range(len(lbls)):
-            #     if lbls[l] > minority_class:
-            #         lbls[l] = minority_class
-
+            if self.num_classes is not None:
+                minority_class = self.num_classes - 1
+                for l in range(len(lbls)):
+                    if lbls[l] > minority_class:
+                        lbls[l] = minority_class
+                for i in range(minority_class + 1, lbls.max()):
+                    dic[minority_class]+= dic[i]
+                    del(dic[i])
+            elif stack_right is not None and isinstance(stack_right, float):
+                dic_ = deepcopy(dic)
+                sum_ = 0
+                done = False
+                i = lbls.max()
+                verification_mask = (lbls==lbls.max())
+                while i > 0 and not done:  # left 0.7 percent
+                    if sum_ + dic_[i] >= scores.shape[0] * stack_right:
+                        done = True
+                    else:
+                        sum_ += dic_[i]
+                        del (dic_[i])
+                        i -= 1
+                dic_[i + 1] = sum_
+                minority_class = i + 1
+                for l in range(len(lbls)):
+                    if lbls[l] > minority_class:
+                        lbls[l] = minority_class
+                assert all(lbls[verification_mask] == minority_class)
+                dic = dic_
             # Sorting classes lower has more data points
             original_keys = list(dic.keys())
             new_keys = sorted(original_keys, key=lambda x: dic[x], reverse=True)
