@@ -507,12 +507,13 @@ class SupervisedConLoss(nn.Module):
         device = (torch.device('cuda')
                   if features.is_cuda
                   else torch.device('cpu'))
+        # import pdb; pdb.set_trace()
         bs = features.shape[0]
-        targets_one_hot = torch.zeros(size=(bs, self.num_classes))
+        targets_one_hot = torch.zeros(size=(bs, self.num_classes)).to(device)
         targets_one_hot.scatter_(1, targets.view(-1, 1), 1)
-        mask_anchor = torch.eye(n=bs)
+        mask_anchor = torch.eye(n=bs).to(device)
         mask_positives = torch.matmul(targets_one_hot, targets_one_hot.T)  # [bs, bs]
-        mask_negatives = torch.ones(size=(bs, bs)) - mask_positives  # [bs, bs]
+        mask_negatives = torch.ones(size=(bs, bs)).to(device) - mask_positives  # [bs, bs]
         mask_positives = mask_positives - mask_anchor
         logits_mask = mask_positives + mask_negatives
         # Now we have computed all masks without self-contrast
