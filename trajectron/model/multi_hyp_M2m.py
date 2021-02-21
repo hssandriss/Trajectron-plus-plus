@@ -171,6 +171,10 @@ class MultiHypothesisNet(object):
                            model_if_absent=nn.Linear(self.state_length, self.pred_state_length))
         self.add_submodule(self.node_type + '/decoder/kalman_logits',
                            model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'] + decoder_input_dims, self.nb_classes))
+
+        self.add_submodule(self.node_type + '/con_head',
+                           model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'] + decoder_input_dims,
+                                                     self.hyperparams['dec_rnn_dim'] + decoder_input_dims))
         self.x_size = x_size
 
     def create_edge_models(self, edge_types):
@@ -321,12 +325,12 @@ class MultiHypothesisNet(object):
             for edge_type in self.edge_types:
                 # Encode edges for given edge type
                 encoded_edges_type = self.encode_edge(mode,
-                                                        node_history,
-                                                        node_history_st,
-                                                        edge_type,
-                                                        neighbors[edge_type],
-                                                        neighbors_edge_value[edge_type],
-                                                        first_history_indices)
+                                                      node_history,
+                                                      node_history_st,
+                                                      edge_type,
+                                                      neighbors[edge_type],
+                                                      neighbors_edge_value[edge_type],
+                                                      first_history_indices)
                 # List of [bs/nbs, enc_rnn_dim]
                 node_edges_encoded.append(encoded_edges_type)
             #####################
@@ -345,9 +349,9 @@ class MultiHypothesisNet(object):
                 map_clone = map.clone()
                 map_patch = self.hyperparams['map_encoder'][self.node_type]['patch_size']
                 map_clone[:, :, map_patch[1] - 5:map_patch[1] +
-                            5, map_patch[0] - 5:map_patch[0] + 5] = 1.
+                          5, map_patch[0] - 5:map_patch[0] + 5] = 1.
                 self.log_writer.add_images(f"{self.node_type}/cropped_maps", map_clone,
-                                            self.curr_iter, dataformats='NCWH')
+                                           self.curr_iter, dataformats='NCWH')
 
             encoded_map = self.node_modules[self.node_type +
                                             '/map_encoder'](map * 2. - 1., (mode == ModeKeys.TRAIN))
@@ -376,7 +380,7 @@ class MultiHypothesisNet(object):
         if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
             if self.log_writer:
                 self.log_writer.add_scalar(f"{self.node_type}/encoded_map_max",
-                                            torch.max(torch.abs(encoded_map)), self.curr_iter)
+                                           torch.max(torch.abs(encoded_map)), self.curr_iter)
             x_concat_list.append(encoded_map)
 
         x = torch.cat(x_concat_list, dim=1)
@@ -443,7 +447,7 @@ class MultiHypothesisNet(object):
                 op_applied_edge_mask_list = list()
                 for edge_value in neighbors_edge_value:
                     op_applied_edge_mask_list.append(torch.clamp(torch.sum(edge_value.to(self.device),
-                                                                            dim=0, keepdim=True), max=1.))
+                                                                           dim=0, keepdim=True), max=1.))
                 combined_edge_masks = torch.stack(
                     op_applied_edge_mask_list, dim=0)
 
@@ -460,7 +464,7 @@ class MultiHypothesisNet(object):
                 op_applied_edge_mask_list = list()
                 for edge_value in neighbors_edge_value:
                     op_applied_edge_mask_list.append(torch.clamp(torch.max(edge_value.to(self.device),
-                                                                            dim=0, keepdim=True), max=1.))
+                                                                           dim=0, keepdim=True), max=1.))
                 combined_edge_masks = torch.stack(
                     op_applied_edge_mask_list, dim=0)
 
@@ -484,7 +488,7 @@ class MultiHypothesisNet(object):
         joint_history = torch.cat(
             [combined_neighbors, node_history_st], dim=-1)
         # TODO => joint history combind neighbors [Bs, T, State] and Ego history with [Bs, T, State] => [Bs, T, State*2]
-        # TODO Refractor this method here into two methods: one for preprocessing and one for doing the 
+        # TODO Refractor this method here into two methods: one for preprocessing and one for doing the
         # We need edge_type, joint_history, combined_edge_masks, first_history_indices, hyperparams
         outputs, _ = run_lstm_on_variable_length_seqs(
             self.node_modules[DirectedEdge.get_str_from_types(
@@ -591,19 +595,18 @@ class MultiHypothesisNet(object):
         initial_h_model = self.node_modules[self.node_type + '/decoder/initial_h']
         initial_mu_model = self.node_modules[self.node_type + '/decoder/initial_mu']
         logits_model = self.node_modules[self.node_type + '/decoder/kalman_logits']
+        con_model = self.node_modules[self.node_type + '/con_head']
         initial_h = initial_h_model(x)
-        initial_h = F.relu(initial_h)
         initial_mu = initial_mu_model(n_s_t0)
-        initial_mu = F.relu(initial_mu)
 
         if self.hyperparams['incl_robot_node']:
             input_ = torch.cat([x, initial_mu, x_nr_t], dim=1)
         else:
             input_ = torch.cat([x, initial_mu], dim=1)
 
-        # features = F.normalize(torch.cat([input_, initial_h], dim=1), dim=1) 
         features = torch.cat([input_, initial_h], dim=1)
         logits = logits_model(features)
+        features = F.normalize(con_model(features), dim=1)
         return logits, features
 
     def predict_kalman_class(self, x, n_s_t0, x_nr_t):

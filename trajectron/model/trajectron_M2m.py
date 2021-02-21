@@ -97,15 +97,14 @@ class Trajectron(object):
     def predict_kalman_class(self, x, n_s_t0, x_nr_t, node_type, normalize_weights=True):
         model = self.node_models_dict[node_type]
         # Weight normalization
-        if normalize_weights:
-            with torch.no_grad():
-                norm = torch.norm(model.node_modules[node_type + '/decoder/kalman_logits'].weight, dim=1, keepdim=True)
-                model.node_modules[node_type + '/decoder/kalman_logits'].weight.div_(norm)
+        # if normalize_weights:
+        #     with torch.no_grad():
+        #         norm = torch.norm(model.node_modules[node_type + '/decoder/kalman_logits'].weight, dim=1, keepdim=True)
+        #         model.node_modules[node_type + '/decoder/kalman_logits'].weight.div_(norm)
         logits, features = model.predict_kalman_class(x, n_s_t0, x_nr_t)
         return logits, features
 
     def predict(self, batch, node_type):
-        model= self.node_models_dict[node_type]
         x, n_s_t0, x_nr_t = self.encoded_x(batch, node_type)
         assert x.is_leaf == False, "You are not backpropagating on the encoder"
         logits, features = self.predict_kalman_class(x,n_s_t0, x_nr_t, node_type, normalize_weights=False)
