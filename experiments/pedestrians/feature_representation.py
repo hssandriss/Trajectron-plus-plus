@@ -208,6 +208,7 @@ if torch.cuda.is_available():
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--data", help="full path to data file", type=str)
+parser.add_argument("--data_test", help="full path to data file", type=str)
 parser.add_argument("--model", help="path to model", type=str)
 parser.add_argument("--checkpoint", help="checkpoint", type=int)
 parser.add_argument("--tagplot", help="tag for plot", type=str)
@@ -215,7 +216,7 @@ parser.add_argument("--save_output", type=str)
 
 args = parser.parse_args()
 
-def rebalance_bins(scores):
+def rebalance_bins_train(scores, binary = True):
     n = scores.shape[0]
     beta = (n - 1) / n
     lbls = (scores / 0.5).astype(np.int)
@@ -228,34 +229,120 @@ def rebalance_bins(scores):
     sum_ = 0
     done = False
     i = lbls.max()
-    while i > 0 and not done: # left 0.7 percent
-        if sum_ + dic_[i] >= scores.shape[0]*0.007:
-            done = True
-        else:
-            sum_ += dic_[i]
+    if binary:
+        switched_dic = {}
+        while i > 0 and not done: # left 10 percent
+            if sum_ + dic_[i] >= scores.shape[0]*0.10:
+                done = True
+            else:
+                sum_ += dic_[i]
+                del (dic_[i])
+                switched_dic[i] = 1
+                i -=1 
+        sum_1 = sum_
+        sum_0 = 0
+        while i >0:
+            sum_0 += dic_[i]
             del (dic_[i])
-            i -=1 
-    dic_[i+1] = sum_
+            switched_dic[i] = 0
+            i -=1
+        switched_dic[0] = 0
+        dic_[0] += sum_0
+        dic_[1] = sum_1
+        assert sum(dic_.values()) == scores.shape[0]
 
-    original_keys = dic_.keys()
-    original_keys = list(original_keys)
-    new_keys = sorted(original_keys, key = lambda x: dic_[x], reverse = True)
-    switched_dic = {new_keys[k]:k for k in range(len(original_keys))}
-    minority_class = i+1
+        for l in range(len(lbls)):
+            lbls[l] = switched_dic[lbls[l]]
+        
+        dic_compare = {}
+        for i in range(lbls.max() + 1):
+            dic_compare[i] = 0
+        for l in lbls:
+            dic_compare[l] += 1 
+    else:
+        while i > 0 and not done: # left 0.7 percent
+            if sum_ + dic_[i] >= scores.shape[0]*0.007:
+                done = True
+            else:
+                sum_ += dic_[i]
+                del (dic_[i])
+                i -=1 
+        dic_[i+1] = sum_
+
+        original_keys = dic_.keys()
+        original_keys = list(original_keys)
+        new_keys = sorted(original_keys, key = lambda x: dic_[x], reverse = True)
+        switched_dic = {new_keys[k]:k for k in range(len(original_keys))}
+        minority_class = i+1
+        for l in range(len(lbls)):
+            if lbls[l] > minority_class:
+                lbls[l] = minority_class
+        for l in range(len(lbls)):
+            lbls[l] = switched_dic[lbls[l]]
+        
+        dic_compare = {}
+        for i in range(lbls.max() + 1):
+            dic_compare[i] = 0
+        for l in lbls:
+            dic_compare[l] += 1 
     assert sum(dic_.values()) == scores.shape[0]
     class_count = [*dic_.values()]
     class_weights = 1. / torch.tensor(class_count, dtype=torch.float)
-    for l in range(len(lbls)):
-        if lbls[l] > minority_class:
-            lbls[l] = minority_class
-    for l in range(len(lbls)):
-        lbls[l] = switched_dic[lbls[l]]
-    
-    dic_compare = {}
+    kalman_classes = lbls
+    class_count_dict = dic_compare
+    return kalman_classes, switched_dic
+
+def rebalance_bins_test(scores, switched_dic, binary = True):
+    n = scores.shape[0]
+    beta = (n - 1) / n
+    lbls = (scores / 0.5).astype(np.int)
+    dic = {}
     for i in range(lbls.max() + 1):
-        dic_compare[i] = 0
+        dic[i] = 0
     for l in lbls:
-        dic_compare[l] += 1 
+        dic[l] += 1
+    dic_ = deepcopy(dic)
+    sum_ = 0
+    done = False
+    i = lbls.max()
+    if binary:
+        for l in range(len(lbls)):
+            lbls[l] = switched_dic[lbls[l]]
+        
+        dic_compare = {}
+        for i in range(lbls.max() + 1):
+            dic_compare[i] = 0
+        for l in lbls:
+            dic_compare[l] += 1 
+    else:
+        while i > 0 and not done: # left 0.7 percent
+            if sum_ + dic_[i] >= scores.shape[0]*0.007:
+                done = True
+            else:
+                sum_ += dic_[i]
+                del (dic_[i])
+                i -=1 
+        dic_[i+1] = sum_
+
+        original_keys = dic_.keys()
+        original_keys = list(original_keys)
+        new_keys = sorted(original_keys, key = lambda x: dic_[x], reverse = True)
+        switched_dic = {new_keys[k]:k for k in range(len(original_keys))}
+        minority_class = i+1
+        for l in range(len(lbls)):
+            if lbls[l] > minority_class:
+                lbls[l] = minority_class
+        for l in range(len(lbls)):
+            lbls[l] = switched_dic[lbls[l]]
+        
+        dic_compare = {}
+        for i in range(lbls.max() + 1):
+            dic_compare[i] = 0
+        for l in lbls:
+            dic_compare[l] += 1 
+    assert sum(dic_.values()) == scores.shape[0]
+    class_count = [*dic_.values()]
+    class_weights = 1. / torch.tensor(class_count, dtype=torch.float)
     kalman_classes = lbls
     class_count_dict = dic_compare
     return kalman_classes
@@ -267,7 +354,7 @@ def load_model(model_dir, env, ts=100):
         hyperparams = json.load(config_json)
 
     trajectron = Trajectron(model_registrar, hyperparams, None, 'cpu')
-
+        
     trajectron.set_environment(env)
     return trajectron, hyperparams
 
@@ -362,9 +449,37 @@ def calculate_epe(pred, gt):
     epe = math.sqrt(diff_x+diff_y)
     return epe
 
+def get_feat_balanced(feat, kalman_classes, portion = 1000):
+    #import pdb; pdb.set_trace()
+    majority_idx = np.random.choice(np.where(kalman_classes==0)[0], len(np.where(kalman_classes==1)[0]))
+    minority_idx = np.where(kalman_classes==1)[0]
+    if portion !=0:
+        np.random.shuffle(minority_idx)
+        np.random.shuffle(majority_idx)
+        majority_idx = majority_idx[:portion]
+        minority_idx = minority_idx[:portion]
+    idx = np.concatenate((majority_idx, minority_idx), axis = 0)
+    np.random.shuffle(idx)
+
+    feat_balanced = feat[idx]
+    kalman_classes_balanced = kalman_classes[idx] 
+
+    return feat_balanced, kalman_classes_balanced
+
+def get_colors(n, n_start = 0):
+    if n <= 13:
+        list_colors = ['red','green','blue','purple', 'navy', 'brown', 'yellow', 'black', 'orange', 'pink', 'cyan', 'grey', 'lightgreen']
+        colors = list_colors[n_start:n+1]
+    else:
+        colors = [(np.random.choice(range(256)), np.random.choice(range(256)), np.random.choice(range(256))) for i in range(n+1- n_start)]
+    return colors
+
 if __name__ == "__main__":
     with open(args.data, 'rb') as f:
         env = dill.load(f, encoding='latin1')
+    
+    with open(args.data_test, 'rb') as f:
+        env_test = dill.load(f, encoding='latin1')
 
     eval_stg, hyperparams = load_model(args.model, env, ts=args.checkpoint)
 
@@ -373,10 +488,18 @@ if __name__ == "__main__":
             node_type1, node_type2, attention_radius = attention_radius_override.split(' ')
             env.attention_radius[(node_type1, node_type2)] = float(attention_radius)
 
+    
     scenes = env.scenes
+    scenes_test = env_test.scenes
 
-    print("-- Preparing Node Graph")
+    print("-- Preparing Node Train Graph")
     for scene in tqdm(scenes):
+        scene.calculate_scene_graph(env.attention_radius,
+                                    hyperparams['edge_addition_filter'],
+                                    hyperparams['edge_removal_filter'])
+    
+    print("-- Preparing Node Test Graph")
+    for scene in tqdm(scenes_test):
         scene.calculate_scene_graph(env.attention_radius,
                                     hyperparams['edge_addition_filter'],
                                     hyperparams['edge_removal_filter'])
@@ -385,6 +508,7 @@ if __name__ == "__main__":
     max_hl = hyperparams['maximum_history_length']
 
     with torch.no_grad():
+        ############# Training set ############
         epes = []
         features_list = []
         for i, scene in enumerate(scenes):
@@ -411,44 +535,109 @@ if __name__ == "__main__":
 
         kalman_errors = np.array(epes)
         print('Kalman (FDE): %.2f' % (np.mean(kalman_errors)))
-        
+
+        ############# Test set ############
+        epes_test = []
+        features_list_test = []
+        for i, scene in enumerate(scenes_test):
+            print(f"---- Evaluating Scene {i + 1}/{len(scenes_test)}")
+            timesteps = np.arange(scene.timesteps)
+            predictions, features = eval_stg.predict(scene,
+                                           timesteps,
+                                           ph,
+                                           min_history_timesteps=7, #if 'test' in args.data else 1,
+                                           min_future_timesteps=12)
+            (prediction_dict, histories_dict, futures_dict) = prediction_output_to_trajectories(predictions,
+                                                                                                scene.dt,
+                                                                                                max_hl,
+                                                                                                ph,
+                                                                                                prune_ph_to_future=True)
+
+            for t in prediction_dict.keys():
+                for node in prediction_dict[t].keys():
+                    z_future = get_kalman_filter_result(histories_dict[t][node])
+                    epe = calculate_epe(z_future, futures_dict[t][node][-1, :])
+                    epes_test.append(epe)
+            features_list_test.append(features)
+        feat_test = torch.cat([features_list_test[i][0] for i in range(len(features_list_test))], dim=0)
+
+        kalman_errors_test = np.array(epes_test)
+        print('Kalman Test (FDE): %.2f' % (np.mean(kalman_errors_test)))
+
+
         assert feat.shape[0] == kalman_errors.shape[0]
+        assert feat_test.shape[0] == kalman_errors_test.shape[0]
         #with open(args.save_output + '.pkl', 'wb') as f_writer:
         #    dill.dump(kalman_errors, f_writer)
-        kalman_classes = rebalance_bins(kalman_errors)
+        kalman_classes, switched_dic = rebalance_bins_train(kalman_errors)
+        kalman_classes_test = rebalance_bins_test(kalman_errors_test, switched_dic)
 
         #######################################
         ####      TSNE Representation      ####
         #######################################
+        feat_balanced, kalman_classes_balanced = get_feat_balanced(feat, kalman_classes)
+        feat_balanced_test, kalman_classes_balanced_test = get_feat_balanced(feat, kalman_classes_test)
         #tsne_input = torch.cat((train_feat, val_feat), dim = 0)
-        tsne_input = feat
-        #idx_train_tsne = train_feat.shape[0]
-        # train : tsne_input[:idx_train_tsne] , val: tsne_input[idx_train_tsne:]
-        tsne_input = tsne_input.numpy()
-
+        train_idx = len(feat_balanced)
+        tsne_input = np.concatenate((feat_balanced, feat_balanced_test), axis = 0)
+        
         # metric: default is euclidean, 
         # check perplexity, early_exaggeration, learning_rate
         print('---------- Start TSNE ----------')
-        tsne_output = TSNE(n_components=2, init = 'pca', ).fit_transform(tsne_input)
+        tsne_output = TSNE(n_components=2, init = 'pca').fit_transform(tsne_input)
+        import pdb; pdb.set_trace()
         #tsne_output_normalized = normalize (tsne_output, axis = 0) # l2 normalization of each feature
         tsne_output_normalized = 2*((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) -1
 
-        #colors = [(random.random(),random.random(),random.random()) for i in range(kalman_classes.max()+ 1) ]
-        colors = ['red','green','blue','purple', 'navy', 'brown', 'yellow', 'black', 'orange', 'pink', 'cyan', 'grey', 'lightgreen']
+        tsne_output_train = tsne_output[: train_idx]
+        tsne_output_test = tsne_output[train_idx:]
+
+        tsne_output_normalized_train = tsne_output_normalized[: train_idx]
+        tsne_output_normalized_test = tsne_output_normalized[train_idx:]
+        
+        colors_train = get_colors(kalman_classes_balanced.max())
+        colors_test = get_colors(n = kalman_classes_balanced.max()+ kalman_classes_balanced_test.max()+1, n_start= kalman_classes_balanced.max() + 1)
         fig = plt.figure(figsize=(8,8))
-        plt.scatter(tsne_output[:,0], tsne_output[:,1], c=kalman_classes, cmap=matplotlib.colors.ListedColormap(colors))
-        labels = [i for i in range(kalman_classes.max()+1)]
+        kalman_classes_balanced_min = kalman_classes_balanced[np.where(kalman_classes_balanced==1)[0]]
+        kalman_classes_balanced_maj = kalman_classes_balanced[np.where(kalman_classes_balanced==0)[0]]
+        kalman_classes_balanced_test_min = kalman_classes_balanced_test[np.where(kalman_classes_balanced_test==1)[0]]
+        kalman_classes_balanced_test_maj = kalman_classes_balanced_test[np.where(kalman_classes_balanced_test==0)[0]]
+
+        tsne_output_train_min = tsne_output_train[np.where(kalman_classes_balanced==1)[0]]
+        tsne_output_train_maj = tsne_output_train[np.where(kalman_classes_balanced==0)[0]]
+
+        tsne_output_test_min = tsne_output_test[np.where(kalman_classes_balanced_test==1)[0]]
+        tsne_output_test_maj = tsne_output_test[np.where(kalman_classes_balanced_test==0)[0]]
+
+
+        plt.scatter(tsne_output_train_min[:,0], tsne_output_train_min[:,1], color = colors_train[0], label = 'train_minority')
+        plt.scatter(tsne_output_train_maj[:,0], tsne_output_train_maj[:,1], color = colors_train[1], label = 'train_majority')
+
+        plt.scatter(tsne_output_test_min[:,0], tsne_output_test_min[:,1], color = colors_test[0], label = 'test_minority')
+        plt.scatter(tsne_output_test_maj[:,0], tsne_output_test_maj[:,1], color = colors_test[1], label = 'test_majority')
+
+        '''labels_train = [str(i)+'_train' for i in range(kalman_classes_balanced.max()+1)]
+        labels_test = [str(i)+'_test' for i in range(kalman_classes_balanced_test.max()+1)]
         cb = plt.colorbar()
-        loc = np.arange(0,max(kalman_classes),max(kalman_classes)/float(len(colors)))
+        loc = np.arange(0,max(kalman_classes_balanced)*2,max(kalman_classes_balanced)/float(len(colors_train)))
+        #loc_test = np.arange(0,max(kalman_classes_balanced_test),max(kalman_classes_balanced_test)/float(len(colors_test)))
         cb.set_ticks(loc)
-        cb.set_ticklabels(labels)
-        plt.savefig(args.tagplot+'.png')
-        for label in labels:
-            idx_label =  np.where(kalman_classes == label)[0]
-            tsne_output_label = tsne_output[idx_label,:]
+        cb.set_ticklabels(labels_train+labels_test)'''
+        plt.legend()
+        plt.savefig(os.path.join(args.model, args.tagplot+'.png'))
+        import pdb; pdb.set_trace()
+        for label in range(kalman_classes_balanced.max()+1):
+            idx_label_train =  np.where(kalman_classes_balanced == label)[0]
+            idx_label_test =  np.where(kalman_classes_balanced_test == label)[0]
+            tsne_output_train_label = tsne_output_train[np.where(kalman_classes_balanced==label)[0]]
+            tsne_output_test_label = tsne_output_test[np.where(kalman_classes_balanced_test==label)[0]]
             plt.clf()
-            plt.scatter(tsne_output_label[:,0], tsne_output_label[:,1] , c = colors[label])
-            plt.savefig(args.tagplot+ '_class_'+ str(label)+'.png')
+            plt.scatter(tsne_output_train_label[:,0], tsne_output_train_label[:,1] , c = colors_train[label], label = 'train')
+
+            plt.scatter(tsne_output_test_label[:,0], tsne_output_test_label[:,1], color = colors_test[label], label = 'test')
+
+            plt.legend()
+            plt.savefig(os.path.join(args.model ,args.tagplot+ '_class_'+ str(label)+'.png'))
 
         import pdb; pdb.set_trace()
         # plt.scatter(tsne_output_normalized[:idx_train_tsne,0], tsne_output_normalized[:idx_train_tsne,1], label='train')

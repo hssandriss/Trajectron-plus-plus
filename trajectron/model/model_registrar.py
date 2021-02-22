@@ -1,7 +1,7 @@
 import os
 import torch
 import torch.nn as nn
-
+import time
 
 def get_model_device(model):
     return next(model.parameters()).device
@@ -50,10 +50,10 @@ class ModelRegistrar(nn.Module):
     def print_model_names(self):
         print(self.model_dict.keys())
 
-    def save_models(self, curr_iter):
+    def save_models(self, curr_iter, log_tag):
         # Create the model directiory if it's not present.
         save_path = os.path.join(self.model_dir,
-                                 'model_registrar-%d.pt' % curr_iter)
+                                 'model_registrar-%d-%s-%s.pt' % (curr_iter, time.strftime("%m-%d-%H"), log_tag))#month, day, hour
 
         torch.save(self.model_dict, save_path)
 

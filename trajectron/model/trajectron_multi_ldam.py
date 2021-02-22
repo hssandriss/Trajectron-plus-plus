@@ -89,7 +89,7 @@ class Trajectron(object):
 
         # Run forward pass
         model = self.node_models_dict[node_type]
-        loss = model.train_loss(inputs=x,
+        loss, loss_no_reweighted, logits = model.train_loss(inputs=x,
                                 inputs_st=x_st_t,
                                 first_history_indices=first_history_index,
                                 labels=y,
@@ -104,7 +104,7 @@ class Trajectron(object):
                                 targets = target_class,
                                 weight = weight)
 
-        return loss
+        return loss, loss_no_reweighted.detach(), logits
 
     def eval_loss(self, batch, node_type):
         (first_history_index,

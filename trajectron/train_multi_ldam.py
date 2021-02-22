@@ -49,6 +49,47 @@ if args.seed is not None:
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
 
+def get_losses_accuracies(train_loss, train_loss_no_reweighted, train_logits, batch_targets, nb_classes):
+    i = 0
+    losses = {}
+    losses_n_w = {}
+    accuracies = {}
+    for i in range(nb_classes):
+        class_idx = (batch_targets== i).nonzero()
+        if len(class_idx) == 0:
+            pass
+        else:
+            train_logits_class = train_logits[class_idx]
+            train_loss_class = round(train_loss[class_idx].mean().item(), 2)
+            train_loss_class_n_w = round(train_loss_no_reweighted[class_idx].mean().item(), 2)
+            losses[i] = train_loss_class
+            losses_n_w[i] = train_loss_class_n_w
+            accuracies[i] = round(((train_logits_class==i).sum()).item()/ len(class_idx), 2)*100
+    accuracy = round ((train_logits.cpu() == batch_targets).sum().item()/ len(batch_targets), 2)*100
+    
+    return losses, losses_n_w, accuracies, accuracy
+
+def epoch_losses_accuracies(losses_list, losses_list_n_w, accuracies_list, nb_classes, epoch):
+    epoch_loss = {}
+    epoch_loss_n_w = {}
+    epoch_accuracies = {}
+    for i in range(nb_classes):
+        epoch_loss['epoch'] = epoch
+        epoch_loss_n_w['epoch'] = epoch
+        epoch_accuracies['epoch'] = epoch
+        loss = []
+        loss_n_w = []
+        accuracy = []
+        for j in range(len(losses_list)):
+            if i in losses_list[j]:
+                loss.append(losses_list[j][i])
+                loss_n_w.append(losses_list_n_w[j][i])
+                accuracy.append(accuracies_list[j][i])
+        if len(loss) > 0:
+            epoch_loss[i] = round(np.mean(loss), 2)
+            epoch_loss_n_w[i] = round(np.mean(loss_n_w), 2)
+            epoch_accuracies[i] = round(np.mean(accuracy), 2)
+    return epoch_loss, epoch_loss_n_w, epoch_accuracies
 
 def main():
     # Load hyperparameters from json
@@ -110,9 +151,15 @@ def main():
 
         log_writer = SummaryWriter(log_dir=model_dir)
 
-    model_dir = '/misc/lmbraid21/ayadim/Trajectron-plus-plus/experiments/pedestrians/models/models_Multi_hyp16_Jan_2021_19_56_41_hotel_ar3'
-    ts = 150
-
+    load_model = False
+    
+    if load_model:
+        print('######### LOADING MODEL #####################')
+        model_dir_loaded = '/misc/lmbraid21/ayadim/Trajectron-plus-plus/experiments/pedestrians/models/models_Multi_hyp16_Jan_2021_19_56_41_hotel_ar3'
+        ts = 150
+    else:
+        print('######### Training from scratch #####################')
+        ts = 150
     # Load training and evaluation environments and scenes
     train_scenes = []
     train_data_path = os.path.join(args.data_dir, args.train_data_dict)
@@ -142,11 +189,14 @@ def main():
                                              scene_freq_mult=hyperparams['scene_freq_mult_train'],
                                              node_freq_mult=hyperparams['node_freq_mult_train'],
                                              hyperparams=hyperparams,
+                                             binary = False, 
                                              min_history_timesteps=hyperparams['minimum_history_length'],
                                              min_future_timesteps=hyperparams['prediction_horizon'],
                                              return_robot=not args.incl_robot_node)
     # nb of observations in each Kalman class
     class_count_dict = train_dataset.class_count_dict 
+    nb_classes = list(class_count_dict[0].keys())[-1] +1
+    print('classes: ', class_count_dict)
     train_data_loader = dict()
 
     for node_type_data_set in train_dataset:
@@ -218,8 +268,11 @@ def main():
             print(f"Created Scene Graph for Evaluation Scene {i}")
             '''
 
-    model_registrar = ModelRegistrar(model_dir, args.device)
-    model_registrar.load_models(ts)
+    if load_model:
+        model_registrar = ModelRegistrar(model_dir_loaded, args.device)
+        model_registrar.load_models(ts)
+    else:
+        model_registrar = ModelRegistrar(model_dir, args.device)
 
     trajectron = Trajectron(model_registrar,
                             hyperparams,
@@ -246,17 +299,27 @@ def main():
         if node_type not in hyperparams['pred_state']:
             continue
         optimizer[node_type] = optim.Adam([{'params': model_registrar.get_all_but_name_match('map_encoder').parameters()},
-                                           {'params': model_registrar.get_name_match('map_encoder').parameters(), 'lr': 0.0008}], lr=hyperparams['learning_rate'])
+                                           {'params': model_registrar.get_name_match('map_encoder').parameters(), 'lr': 0.0008}], 
+                                           lr=hyperparams['learning_rate'])#, weight_decay = 2e-4)
         # Set Learning Rate
         if hyperparams['learning_rate_style'] == 'const':
+            print('######################### const lr ######################')
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(
                 optimizer[node_type], gamma=1.0)
         elif hyperparams['learning_rate_style'] == 'exp':
+            print('######################### exp lr scheduler ######################')
             lr_scheduler[node_type] = optim.lr_scheduler.ExponentialLR(optimizer[node_type],
                                                                        gamma=hyperparams['learning_decay_rate'])
+        elif hyperparams['learning_rate_style'] == 'cosAnnWarmRestart':
+            print('######################### cosAnnWarmRestart lr scheduler ######################')
+            lr_scheduler[node_type] = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer[node_type],
+                                                                    eta_min = 0,
+                                                                    T_0 = hyperparams['T_0'],
+                                                                    T_mult = hyperparams['T_mult'],)
 
-    train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
-    eval_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
+    print('optimizer: ', optimizer)
+    train_loss_df = pd.DataFrame(columns=['epoch', 'loss', 'accuracy'])
+    eval_loss_df = pd.DataFrame(columns=['epoch', 'loss', 'accuracy'])
     #################################
     #           TRAINING            #
     #################################
@@ -264,14 +327,27 @@ def main():
         node_type: 0 for node_type in train_data_loader.keys()}
     top_n = hyperparams['num_hyp']
     weight = None
+    train_accuracies_list = []
+    train_losses_list = []
+    iters = 0
+    for node_type, data_loader in train_data_loader.items():
+        # used if optimizer cos annealing warm restarts
+        iters += len(data_loader)
 
     for epoch in range(1 + ts, args.train_epochs + 1 + ts):
-        if epoch > ts + 30 :
+        print ('Epoch ', epoch, ' lr: ', lr_scheduler[node_type].get_lr()[0])
+        if epoch > ts + 100 :
             weight = torch.cuda.FloatTensor([*class_count_dict[0].values()])
             weight = 1.0 / weight
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
         loss_epoch = []
+        loss_n_w_epoch = []
+        accuracy_epoch = []
+        losses_list = []
+        losses_n_w_list = []
+        accuracies_list = []
+
         for node_type, data_loader in train_data_loader.items():
             curr_iter = curr_iter_node_type[node_type]
             pbar = tqdm(data_loader, ncols=80)
@@ -279,12 +355,23 @@ def main():
                 trajectron.set_curr_iter(curr_iter)
                 # trajectron.step_annealers(node_type)
                 optimizer[node_type].zero_grad()
-                train_loss = trajectron.train_loss(
+                batch_targets= batch[-1]
+                train_loss, train_loss_no_reweighted, train_logits = trajectron.train_loss(
                     batch, node_type, weight = weight, top_n=top_n)
+                
+                losses, losses_n_w, accuracies, accuracy = get_losses_accuracies(train_loss,train_loss_no_reweighted,  train_logits, batch_targets, nb_classes)
+                losses_list.append(losses)
+                accuracies_list.append(accuracies)
+                losses_n_w_list.append(losses_n_w)
+
                 pbar.set_description(
-                    f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
-                loss_epoch.append(train_loss.item()/top_n)
-                train_loss.backward()
+                    f"Epoch {epoch}, {node_type} L: {train_loss.mean().item():.2f} L_n_w: {train_loss_no_reweighted.mean().item():.2f} A: {accuracy:.2f}")
+                
+                
+                loss_epoch.append(train_loss.mean().item())
+                loss_n_w_epoch.append(train_loss_no_reweighted.mean().item())
+                accuracy_epoch.append(accuracy)
+                train_loss.mean().backward()
                 # Clipping gradients.
                 if hyperparams['grad_clip'] is not None:
                     nn.utils.clip_grad_value_(
@@ -292,19 +379,41 @@ def main():
                 optimizer[node_type].step()
 
                 # Stepping forward the learning rate scheduler and annealers.
-                lr_scheduler[node_type].step()
+                if hyperparams['learning_rate_style'] == 'cosAnnWarmRestart':
+                    lr_scheduler[node_type].step()
+                else:
+                    lr_scheduler[node_type].step()
 
                 curr_iter += 1
-
+            epoch_losses, epoch_losses_n_w, epoch_accuracies = epoch_losses_accuracies(losses_list, losses_n_w_list, accuracies_list, nb_classes, epoch)
+            print('Epoch ', epoch, ' losses: ', epoch_losses)
+            print('Epoch ', epoch, ' losses non weighted: ', epoch_losses_n_w)
+            print('Epoch ', epoch, ' accuracies: ', epoch_accuracies)
             if not args.debug:
                 log_writer.add_scalar(f"{node_type}/train/learning_rate",
                                       lr_scheduler[node_type].get_lr()[0],
                                       epoch)
                 log_writer.add_scalar(
                     f"{node_type}/train/loss", np.mean(loss_epoch), epoch)
+                log_writer.add_scalar(
+                    f"{node_type}/train/loss_non_weighted", np.mean(loss_n_w_epoch), epoch)
+                log_writer.add_scalar(
+                    f"{node_type}/train/accuracy", np.mean(accuracy_epoch), epoch)
+                for i in range(nb_classes):
+                    log_writer.add_scalar(
+                        f"{node_type}/train/loss_class_"+str(i), epoch_losses[i], epoch)
+                    log_writer.add_scalar(
+                        f"{node_type}/train/loss_n_w_class_"+str(i), epoch_losses_n_w[i], epoch)
+                    #log_writer.add_scalar(
+                    #    f"{node_type}/train/loss_minority", epoch_losses[nb_classes-1], epoch)
+                    log_writer.add_scalar(
+                        f"{node_type}/train/accuracy_class_"+str(i), epoch_accuracies[i], epoch)
+
             curr_iter_node_type[node_type] = curr_iter
-            train_loss_df = train_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(loss_epoch)]], columns=[
-                'epoch', 'loss']), ignore_index=True)
+            train_loss_df = train_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(loss_epoch), np.mean(accuracy_epoch)]], columns=[
+                'epoch', 'loss', 'accuracy']), ignore_index=True)
+            train_losses_list.append(epoch_losses)
+            train_accuracies_list.append(epoch_accuracies)
         train_dataset.augment = False
 
         '''if args.eval_every is not None or args.vis_every is not None:
@@ -478,8 +587,14 @@ def main():
                 #                             epoch)
 
         if args.save_every is not None and args.debug is False and epoch % args.save_every == 0:
-            model_registrar.save_models(epoch)
-    train_loss_df.to_csv('train_loss%s.csv' % args.log_tag, sep=";")
+            model_registrar.save_models(epoch, args.log_tag)
+    train_loss_df.to_csv(os.path.join(model_dir, 'train_loss%s.csv' % args.log_tag), sep=";")
+    losses_file = os.path.join(model_dir, 'losses'+ args.log_tag +'.json') 
+    with open(losses_file, 'w') as fout:
+        json.dump(train_losses_list, fout)
+    accuracies_file = os.path.join(model_dir, 'accuracies'+ args.log_tag +'.json') 
+    with open(accuracies_file, 'w') as fout:
+        json.dump(train_accuracies_list, fout)
     #eval_loss_df.to_csv('eval_loss%s.csv' % args.log_tag, sep=";")
 
 

@@ -1,6 +1,7 @@
 import torch
 from torch import nn
 import torch.nn.functional as F
+from torch.nn import Parameter
 import torch.nn.utils.rnn as rnn
 from enum import Enum
 import functools
@@ -152,5 +153,23 @@ class LDAMLoss(nn.Module):
         x_m = x - batch_m # prediction of ALL classees - Delta
     
         output = torch.where(index, x_m, x) # we take x_m if index else we take x
-        return F.cross_entropy(self.s*output, target, weight=weight)
+        return F.cross_entropy(self.s*output, target, weight=weight, reduction= 'none')
+
      
+0,1,2,3,4
+        
+10;  
+
+
+
+
+class NormedLinear(nn.Module):
+
+    def __init__(self, in_features, out_features):
+        super(NormedLinear, self).__init__()
+        self.weight = Parameter(torch.Tensor(in_features, out_features))
+        self.weight.data.uniform_(-1, 1).renorm_(2, 1, 1e-5).mul_(1e5)
+
+    def forward(self, x):
+        out = F.normalize(x, dim=1).mm(F.normalize(self.weight, dim=0))
+        return out

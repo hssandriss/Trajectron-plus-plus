@@ -48,13 +48,14 @@ class EnvironmentDatasetKalman(object):
 
 class NodeTypeDatasetKalman(data.Dataset):
     def __init__(self, env, scores_path, node_type, state, pred_state, node_freq_mult,
-                 scene_freq_mult, hyperparams, augment=False, **kwargs):
+                 scene_freq_mult, hyperparams, binary, augment=False, **kwargs):
         self.env = env
         self.state = state
         self.pred_state = pred_state
         self.hyperparams = hyperparams
         self.max_ht = self.hyperparams['maximum_history_length']
         self.max_ft = kwargs['min_future_timesteps']
+        self.binary = binary
 
         self.scores_path = scores_path
         self.augment = augment
@@ -104,7 +105,7 @@ class NodeTypeDatasetKalman(data.Dataset):
                 replacement=True
             )
 
-    def rebalance_bins(self):
+    def rebalance_bins(self, binary = True):
         env_name = self.env.scenes[0].name
         with open(os.path.join(self.scores_path, '%s_kalman.pkl' % env_name), 'rb') as f:
             scores = dill.load(f)
@@ -120,35 +121,67 @@ class NodeTypeDatasetKalman(data.Dataset):
             sum_ = 0
             done = False
             i = lbls.max()
-            while i > 0 and not done: # left 0.7 percent
-                if sum_ + dic_[i] >= scores.shape[0]*0.007:
-                    done = True
-                else:
-                    sum_ += dic_[i]
+            if self.binary:
+                switched_dic = {}
+                while i > 0 and not done: # left 10 percent
+                    if sum_ + dic_[i] >= scores.shape[0]*0.10:
+                        done = True
+                    else:
+                        sum_ += dic_[i]
+                        del (dic_[i])
+                        switched_dic[i] = 1
+                        i -=1 
+                sum_1 = sum_
+                sum_0 = 0
+                while i >0:
+                    sum_0 += dic_[i]
                     del (dic_[i])
-                    i -=1 
-            dic_[i+1] = sum_
+                    switched_dic[i] = 0
+                    i -=1
+                switched_dic[0] = 0
+                dic_[0] += sum_0
+                dic_[1] = sum_1
+                assert sum(dic_.values()) == scores.shape[0]
 
-            original_keys = dic_.keys()
-            original_keys = list(original_keys)
-            new_keys = sorted(original_keys, key = lambda x: dic_[x], reverse = True)
-            switched_dic = {new_keys[k]:k for k in range(len(original_keys))}
-            minority_class = i+1
-            assert sum(dic_.values()) == scores.shape[0]
+                for l in range(len(lbls)):
+                    lbls[l] = switched_dic[lbls[l]]
+                
+                dic_compare = {}
+                for i in range(lbls.max() + 1):
+                    dic_compare[i] = 0
+                for l in lbls:
+                    dic_compare[l] += 1 
+            else:
+                while i > 0 and not done: # left 0.7 percent
+                    if sum_ + dic_[i] >= scores.shape[0]*0.007:
+                        done = True
+                    else:
+                        sum_ += dic_[i]
+                        del (dic_[i])
+                        i -=1 
+                dic_[i+1] = sum_
+
+                original_keys = dic_.keys()
+                original_keys = list(original_keys)
+                new_keys = sorted(original_keys, key = lambda x: dic_[x], reverse = True)
+                switched_dic = {new_keys[k]:k for k in range(len(original_keys))}
+                minority_class = i+1
+                assert sum(dic_.values()) == scores.shape[0]
+                
+                for l in range(len(lbls)):
+                    if lbls[l] > minority_class:
+                        lbls[l] = minority_class
+                for l in range(len(lbls)):
+                    lbls[l] = switched_dic[lbls[l]]
+                
+                dic_compare = {}
+                for i in range(lbls.max() + 1):
+                    dic_compare[i] = 0
+                for l in lbls:
+                    dic_compare[l] += 1 
+
             class_count = [*dic_.values()]
             class_weights = 1. / torch.tensor(class_count, dtype=torch.float)
-            for l in range(len(lbls)):
-                if lbls[l] > minority_class:
-                    lbls[l] = minority_class
-            for l in range(len(lbls)):
-                lbls[l] = switched_dic[lbls[l]]
-            
-            dic_compare = {}
-            for i in range(lbls.max() + 1):
-                dic_compare[i] = 0
-            for l in lbls:
-                dic_compare[l] += 1 
-
             self.class_weights_all = class_weights[lbls]
             balanced_class_weights = (1 - beta) / (1 - torch.pow(beta, torch.tensor(class_count, dtype=torch.float)))
             self.balanced_class_weights_all = balanced_class_weights[lbls]
@@ -165,7 +198,6 @@ class NodeTypeDatasetKalman(data.Dataset):
 
     def load_scores(self):
         env_name = self.env.scenes[0].name
-        import dill
         with open(os.path.join(self.scores_path, '%s_kalman.pkl' % env_name), 'rb') as f:
             self.scores = dill.load(f)
         # with open('/home/makansio/raid21/Trajectron-EWTA/experiments/pedestrians/%s_deter_multi.pkl' % env_name, 'rb') as f:
