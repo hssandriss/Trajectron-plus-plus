@@ -162,7 +162,7 @@ if __name__ == '__main__':
     hyperparams['data_loader_sampler'] = 'random'
     hyperparams['learning_rate_style'] = 'cosannw'
 
-    hyperparams['learning_rate'] = 0.01  # Override lr
+    # hyperparams['learning_rate'] = 0.01  # Override lr
     import pdb; pdb.set_trace()
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(args.device)
@@ -328,8 +328,8 @@ if __name__ == '__main__':
                                                                             train_data_loader, hyperparams, log_writer, args.device)
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
-            epoch_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
-                                     train_data_loader, epoch, hyperparams, log_writer, args.device)
+            epoch_loss = train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+                                         train_data_loader, epoch, hyperparams, log_writer, args.device)
 
             # class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
             #                                     train_data_loader, epoch, hyperparams, log_writer, args.device)
@@ -355,7 +355,7 @@ if __name__ == '__main__':
         cls_accuracies.append({"epoch": epoch, "accuracy per class": class_acc})
         cls_losses.append({"epoch": epoch, "loss per class": class_loss})
         losses.append({"epoch": epoch, "loss": epoch_loss})
-        if args.save_every is not None and epoch % args.save_every == 0:
+        if (args.save_every is not None and epoch % args.save_every == 0) or epoch == args.train_epochs:
             model_registrar.save_models(epoch, extra_tag)
             with open(f'cls_accuracies_{extra_tag}.json', 'w') as fout:
                 json.dump(cls_accuracies, fout)

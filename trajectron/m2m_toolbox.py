@@ -504,6 +504,18 @@ class SupervisedConLoss(nn.Module):
         self.num_classes = num_classes
 
     def forward(self, features, targets, temp=0.1):
+        """Calculates supervised contrastive loss based on label
+
+        Args:
+            features (torch.Tensor): [bs, feature_size]
+            targets (torch.Tensor): [bs]
+            temp (float, optional): [description]. Defaults to 0.1.
+
+        Returns:
+            loss : loss mean
+            avg_num_positives per sample
+            avg_num_negatives_per sample
+        """
         device = (torch.device('cuda')
                   if features.is_cuda
                   else torch.device('cpu'))
@@ -527,8 +539,7 @@ class SupervisedConLoss(nn.Module):
 
         # compute log_prob
         exp_logits = torch.exp(logits) * logits_mask
-        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-20)
-
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-20)  # [bs, bs] - [bs, 1]
         # compute mean of log-likelihood over positive
         mean_log_prob_pos = (mask_positives * log_prob).sum(1) / (mask_positives.sum(1) + 1e-20)
 
