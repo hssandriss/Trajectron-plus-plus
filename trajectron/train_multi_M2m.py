@@ -105,7 +105,7 @@ if __name__ == '__main__':
     log_writer = None
     model_dir = None
     model_tag = "_".join(["model_classification", datetime.now().strftime("%d_%m_%Y-%H_%M"), args.log_tag])
-    model_tag = "model_classification_22_02_2021-12_27_cosann_10_2_ce_2_conloss_eth_ar3"
+    # model_tag = "model_classification_22_02_2021-12_27_cosann_10_2_ce_2_conloss_eth_ar3"
     if not args.debug:
         # Create the log and model directiory if they're not present.
         model_dir = os.path.join(args.log_dir, args.experiment, model_tag)
@@ -149,7 +149,7 @@ if __name__ == '__main__':
 
     hyperparams['class_count_dic'] = train_dataset.class_count_dict[0]
     hyperparams['class_count'] = list(hyperparams['class_count_dic'].values())
-    # hyperparams['class_weights'] = train_dataset.class_weights[0]
+    hyperparams['class_weights'] = train_dataset.class_weights[0]
     hyperparams['num_classes'] = len(hyperparams['class_count_dic'])
     # TODO Read these values from command line args
     hyperparams['beta'] = 0.9  # (0.9, 0.99, 0.999) Lower -> bigger p accept
@@ -163,7 +163,7 @@ if __name__ == '__main__':
     hyperparams['learning_rate_style'] = 'cosannw'
 
     # hyperparams['learning_rate'] = 0.01  # Override lr
-    # import pdb; pdb.set_trace()
+    import pdb; pdb.set_trace()
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(args.device)
 
@@ -257,7 +257,7 @@ if __name__ == '__main__':
                                           hyperparams['num_classes'])
     # Load pretrained model on multi hypothesis
     model_registrar = ModelRegistrar(model_dir, args.device)
-    import pdb; pdb.set_trace()
+
     if args.net_trajectron_ts:
         model_registrar.load_models(args.net_trajectron_ts, extra_tag=extra_tag)
     trajectron = Trajectron(model_registrar,
@@ -265,7 +265,6 @@ if __name__ == '__main__':
                             log_writer,
                             args.device)
     trajectron.set_environment(train_env)
-    import pdb; pdb.set_trace()
 
     print('Created Training Model.')
 
@@ -302,10 +301,10 @@ if __name__ == '__main__':
 
     # Classification criterion
     # https://arxiv.org/pdf/1901.05555.pdf
-    # weight=hyperparams['class_weights'].to(args.device)
-    criterion = nn.CrossEntropyLoss(reduction='none')
+    weight = hyperparams['class_weights'].to(args.device)
+    criterion_1 = nn.CrossEntropyLoss(reduction='none', weight=weight)
     # criterion = LDAMLoss(cls_num_list=hyperparams['class_count'], max_m=0.5, s=30, reduction='none').cuda()
-    # criterion = SupervisedConLoss(hyperparams['num_classes'])
+    # criterion_2 = SupervisedConLoss(hyperparams['num_classes'])
     #################################
     #           TRAINING            #
     #################################
@@ -333,14 +332,15 @@ if __name__ == '__main__':
                                                                             train_data_loader, hyperparams, log_writer, args.device)
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
-            # epoch_loss = train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
-            #                              train_data_loader, epoch, hyperparams, log_writer, args.device)
-
-            class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+            # if epoch % 5:
+            #     epoch_loss = train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
+            #                                  train_data_loader, epoch, hyperparams, log_writer, args.device)
+            # else:
+            class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
                                                 train_data_loader, epoch, hyperparams, log_writer, args.device)
 
-        # if not args.gen and epoch >= 75:
-        #     criterion = nn.CrossEntropyLoss(reduction='none', weight=weight)
+        # if not args.gen and epoch >= 100:
+        #     criterion_1 = nn.CrossEntropyLoss(reduction='none', weight=weight)
 
         #     # Use now weighted sampler
         #     train_data_loader = dict()

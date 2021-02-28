@@ -33,7 +33,7 @@ class EnvironmentDatasetKalman(object):
             self.node_type_datasets.append(node_type_dataset)
             self.kalman_classes.append(node_type_dataset.kalman_classes)
             self.class_count_dict.append(node_type_dataset.class_count_dict)
-            # self.class_weights.append(node_type_dataset.balanced_class_weights)
+            self.class_weights.append(node_type_dataset.balanced_class_weights)
 
     @property
     def augment(self):
@@ -135,6 +135,13 @@ class NodeTypeDatasetKalman(data.Dataset):
             dic_[i] = 0
         for l in lbls:
             dic_[l] += 1
+        class_count = [*dic_.values()]
+        import pdb; pdb.set_trace()
+        n = scores.shape[0]
+        beta = (n - 1) / n
+        self.balanced_class_weights = (1 - beta) / (1 - torch.pow(beta, torch.tensor(class_count, dtype=torch.float)))
+        self.balanced_class_weights_all = self.balanced_class_weights[lbls]
+        import pdb; pdb.set_trace()
         self.kalman_classes = lbls
         self.class_count_dict = dic_
 
