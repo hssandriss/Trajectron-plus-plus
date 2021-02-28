@@ -33,7 +33,7 @@ class EnvironmentDatasetKalman(object):
             self.node_type_datasets.append(node_type_dataset)
             self.kalman_classes.append(node_type_dataset.kalman_classes)
             self.class_count_dict.append(node_type_dataset.class_count_dict)
-            self.class_weights.append(node_type_dataset.balanced_class_weights)
+            # self.class_weights.append(node_type_dataset.balanced_class_weights)
 
     @property
     def augment(self):
@@ -68,7 +68,8 @@ class NodeTypeDatasetKalman(data.Dataset):
         self.edge_types = [edge_type for edge_type in env.get_edge_types() if edge_type[0] is node_type]
         self.num_classes = predifined_num_classes
         self.load_scores()
-        self.rebalance_bins(stack_right=stack_right)
+        self.rebalance_bins_binary()
+        # self.rebalance_bins_multi(stack_right=stack_right)
 
     def index_env(self, node_freq_mult, scene_freq_mult, **kwargs):
         index = list()
@@ -107,84 +108,113 @@ class NodeTypeDatasetKalman(data.Dataset):
                 replacement=True
             )
 
-    def rebalance_bins(self, stack_right):
+    def rebalance_bins_binary(self, split=0.1):
+        env_name = self.env.scenes[0].name
+        with open(os.path.join(self.scores_path, '%s_kalman.pkl' % env_name), 'rb') as f:
+            scores = dill.load(f)
+        lbls = (scores / 0.5).astype(np.int)
+        # Calculating class values counts
+        dic = {}
+        for i in range(lbls.max() + 1):
+            dic[i] = 0
+        for l in lbls:
+            dic[l] += 1
+        # split point
+        split_count = scores.shape[0] * (1 - split)
+        cum_sum = 0
+        for i in range(lbls.max() + 1):
+            if cum_sum + dic[i] > split_count:
+                split_cls = i  # included in majority
+                break
+            else:
+                cum_sum = cum_sum + dic[i]
+        lbls = np.where(lbls <= split_cls, 0, lbls)
+        lbls = np.where(lbls > split_cls, 1, lbls)
+        dic_ = {}
+        for i in range(lbls.max() + 1):
+            dic_[i] = 0
+        for l in lbls:
+            dic_[l] += 1
+        self.kalman_classes = lbls
+        self.class_count_dict = dic_
+
+    def rebalance_bins_multi(self, stack_right):
         # TODO Use 1 spaced clusters
         env_name = self.env.scenes[0].name
         with open(os.path.join(self.scores_path, '%s_kalman.pkl' % env_name), 'rb') as f:
             scores = dill.load(f)
-            lbls = (scores / 0.5).astype(np.int)
+        lbls = (scores / 0.5).astype(np.int)
 
-            # Calculating class values counts
-            dic = {}
-            for i in range(lbls.max() + 1):
-                dic[i] = 0
-            for l in lbls:
-                dic[l] += 1
-            # Stacking the right 0.7 percent into a class
-            if self.num_classes is not None:
-                minority_class = self.num_classes - 1
-                for l in range(len(lbls)):
-                    if lbls[l] > minority_class:
-                        lbls[l] = minority_class
-                for i in range(minority_class + 1, lbls.max()):
-                    dic[minority_class]+= dic[i]
-                    del(dic[i])
-            elif stack_right is not None and isinstance(stack_right, float):
-                dic_ = deepcopy(dic)
-                sum_ = 0
-                done = False
-                i = lbls.max()
-                verification_mask = (lbls==lbls.max())
-                while i > 0 and not done:  # left 0.7 percent
-                    if sum_ + dic_[i] >= scores.shape[0] * stack_right:
-                        done = True
-                    else:
-                        sum_ += dic_[i]
-                        del (dic_[i])
-                        i -= 1
-                dic_[i + 1] = sum_
-                minority_class = i + 1
-                for l in range(len(lbls)):
-                    if lbls[l] > minority_class:
-                        lbls[l] = minority_class
-                assert all(lbls[verification_mask] == minority_class)
-                dic = dic_
-            # Sorting classes lower has more data points
-            original_keys = list(dic.keys())
-            new_keys = sorted(original_keys, key=lambda x: dic[x], reverse=True)
-            sorting_dic = {new_keys[k]: k for k in range(len(original_keys))}
-
-            # Overwriting class values
+        # Calculating class values counts
+        dic = {}
+        for i in range(lbls.max() + 1):
+            dic[i] = 0
+        for l in lbls:
+            dic[l] += 1
+        # Stacking the right 0.7 percent into a class
+        if self.num_classes is not None:
+            minority_class = self.num_classes - 1
             for l in range(len(lbls)):
-                lbls[l] = sorting_dic[lbls[l]]
+                if lbls[l] > minority_class:
+                    lbls[l] = minority_class
+            for i in range(minority_class + 1, lbls.max()):
+                dic[minority_class] += dic[i]
+                del(dic[i])
+        elif stack_right is not None and isinstance(stack_right, float):
+            dic_ = deepcopy(dic)
+            sum_ = 0
+            done = False
+            i = lbls.max()
+            verification_mask = (lbls == lbls.max())
+            while i > 0 and not done:  # left 0.7 percent
+                if sum_ + dic_[i] >= scores.shape[0] * stack_right:
+                    done = True
+                else:
+                    sum_ += dic_[i]
+                    del (dic_[i])
+                    i -= 1
+            dic_[i + 1] = sum_
+            minority_class = i + 1
+            for l in range(len(lbls)):
+                if lbls[l] > minority_class:
+                    lbls[l] = minority_class
+            assert all(lbls[verification_mask] == minority_class)
+            dic = dic_
+        # Sorting classes lower has more data points
+        original_keys = list(dic.keys())
+        new_keys = sorted(original_keys, key=lambda x: dic[x], reverse=True)
+        sorting_dic = {new_keys[k]: k for k in range(len(original_keys))}
 
-            # Calculating class values counts after sorting
-            dic_sorted = {}
-            for i in range(lbls.max() + 1):
-                dic_sorted[i] = 0
-            for l in lbls:
-                dic_sorted[l] += 1
-            assert sum(dic_sorted.values()) == scores.shape[0]
+        # Overwriting class values
+        for l in range(len(lbls)):
+            lbls[l] = sorting_dic[lbls[l]]
 
-            # class weights .i.e sampling probability
-            class_count = [*dic_sorted.values()]
-            class_weights = 1. / torch.tensor(class_count, dtype=torch.float)
-            self.class_weights_all = class_weights[lbls]
-            self.weighted_sampler = data.WeightedRandomSampler(
-                weights=self.class_weights_all,
-                num_samples=len(self.class_weights_all),
-                replacement=True)
+        # Calculating class values counts after sorting
+        dic_sorted = {}
+        for i in range(lbls.max() + 1):
+            dic_sorted[i] = 0
+        for l in lbls:
+            dic_sorted[l] += 1
+        assert sum(dic_sorted.values()) == scores.shape[0]
 
-            # class weights based on effective number of samples
-            # https://arxiv.org/pdf/1901.05555.pdf
-            n = scores.shape[0]
-            beta = (n - 1) / n
-            self.balanced_class_weights = (
-                1 - beta) / (1 - torch.pow(beta, torch.tensor(class_count, dtype=torch.float)))
-            self.balanced_class_weights_all = self.balanced_class_weights[lbls]
+        # class weights .i.e sampling probability
+        class_count = [*dic_sorted.values()]
+        class_weights = 1. / torch.tensor(class_count, dtype=torch.float)
+        self.class_weights_all = class_weights[lbls]
+        self.weighted_sampler = data.WeightedRandomSampler(
+            weights=self.class_weights_all,
+            num_samples=len(self.class_weights_all),
+            replacement=True)
 
-            self.kalman_classes = lbls
-            self.class_count_dict = dic_sorted
+        # class weights based on effective number of samples
+        # https://arxiv.org/pdf/1901.05555.pdf
+        n = scores.shape[0]
+        beta = (n - 1) / n
+        self.balanced_class_weights = (1 - beta) / (1 - torch.pow(beta, torch.tensor(class_count, dtype=torch.float)))
+        self.balanced_class_weights_all = self.balanced_class_weights[lbls]
+
+        self.kalman_classes = lbls
+        self.class_count_dict = dic_sorted
 
     def load_scores(self):
         env_name = self.env.scenes[0].name
@@ -207,7 +237,7 @@ class NodeTypeDatasetKalman(data.Dataset):
             node = scene.get_node_by_id(node.id)
 
         sample = get_node_timestep_data(self.env, scene, t, node, self.state, self.pred_state,
-                                        self.edge_types, self.max_ht, self.max_ft, self.hyperparams) + (self.balanced_class_weights_all[i], self.kalman_classes[i])
+                                        self.edge_types, self.max_ht, self.max_ft, self.hyperparams) + (0, self.kalman_classes[i],)
         # scene = scene.augment()
         # node = scene.get_node_by_id(node.id)
         # sample_aug = get_node_timestep_data(self.env, scene, t, node, self.state, self.pred_state,

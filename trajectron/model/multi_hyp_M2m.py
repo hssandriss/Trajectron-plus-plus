@@ -557,6 +557,162 @@ class MultiHypothesisNet(object):
                                            training=(mode == ModeKeys.TRAIN))
         return combined_edges
 
+    def preprocess_edge(self,
+                        mode,
+                        node_history,
+                        node_history_st,
+                        edge_type,
+                        neighbors,
+                        neighbors_edge_value,
+                        first_history_indices):
+        max_hl = self.hyperparams['maximum_history_length']
+        edge_states_list = list()  # list of [#of neighbors, max_ht, state_dim]
+        # Get neighbors for timestep in batch
+        for i, neighbor_states in enumerate(neighbors):
+            if len(neighbor_states) == 0:  # There are no neighbors for edge type # TODO necessary?
+                neighbor_state_length = int(
+                    np.sum([len(entity_dims)
+                            for entity_dims in self.state[edge_type[1]].values()])
+                )
+                edge_states_list.append(torch.zeros(
+                    (1, max_hl + 1, neighbor_state_length), device=self.device))
+            else:
+                edge_states_list.append(torch.stack(
+                    neighbor_states, dim=0).to(self.device))
+        # TODO This results => list of Bs tensors of shape [7, 8, 6]
+        if self.hyperparams['edge_state_combine_method'] == 'sum':
+            # Used in Structural-RNN to combine edges as well.
+            op_applied_edge_states_list = list()
+            for neighbors_state in edge_states_list:
+                op_applied_edge_states_list.append(
+                    torch.sum(neighbors_state, dim=0))
+            combined_neighbors = torch.stack(
+                op_applied_edge_states_list, dim=0)
+            # TODO This results => in tensor [Bs, T, State]
+            if self.hyperparams['dynamic_edges'] == 'yes':
+                # Should now be (bs, time, 1)
+                op_applied_edge_mask_list = list()
+                for edge_value in neighbors_edge_value:
+                    op_applied_edge_mask_list.append(torch.clamp(torch.sum(edge_value.to(self.device),
+                                                                           dim=0, keepdim=True), max=1.))
+                combined_edge_masks = torch.stack(
+                    op_applied_edge_mask_list, dim=0)
+
+        elif self.hyperparams['edge_state_combine_method'] == 'max':
+            # Used in NLP, e.g. max over word embeddings in a sentence.
+            op_applied_edge_states_list = list()
+            for neighbors_state in edge_states_list:
+                op_applied_edge_states_list.append(
+                    torch.max(neighbors_state, dim=0))
+            combined_neighbors = torch.stack(
+                op_applied_edge_states_list, dim=0)
+            if self.hyperparams['dynamic_edges'] == 'yes':
+                # Should now be (bs, time, 1)
+                op_applied_edge_mask_list = list()
+                for edge_value in neighbors_edge_value:
+                    op_applied_edge_mask_list.append(torch.clamp(torch.max(edge_value.to(self.device),
+                                                                           dim=0, keepdim=True), max=1.))
+                combined_edge_masks = torch.stack(
+                    op_applied_edge_mask_list, dim=0)
+
+        elif self.hyperparams['edge_state_combine_method'] == 'mean':
+            # Used in NLP, e.g. mean over word embeddings in a sentence.
+            op_applied_edge_states_list = list()
+            for neighbors_state in edge_states_list:
+                op_applied_edge_states_list.append(
+                    torch.mean(neighbors_state, dim=0))
+            combined_neighbors = torch.stack(
+                op_applied_edge_states_list, dim=0)
+            if self.hyperparams['dynamic_edges'] == 'yes':
+                # Should now be (bs, time, 1)
+                op_applied_edge_mask_list = list()
+                for edge_value in neighbors_edge_value:
+                    op_applied_edge_mask_list.append(torch.clamp(torch.mean(edge_value.to(self.device),
+                                                                            dim=0, keepdim=True), max=1.))
+                combined_edge_masks = torch.stack(
+                    op_applied_edge_mask_list, dim=0)
+
+        joint_history = torch.cat(
+            [combined_neighbors, node_history_st], dim=-1)
+        return joint_history, combined_edge_masks
+
+    # def encode_edge(self,
+    #                 mode,
+    #                 joint_history,
+    #                 edge_type,
+    #                 combined_edge_masks,
+    #                 first_history_indices):
+
+    #     # TODO => joint history combind neighbors [Bs, T, State] and Ego history with [Bs, T, State] => [Bs, T, State*2]
+    #     # TODO Refractor this method here into two methods: one for preprocessing and one for doing the
+    #     # We need edge_type, joint_history, combined_edge_masks, first_history_indices, hyperparams
+    #     outputs, _ = run_lstm_on_variable_length_seqs(
+    #         self.node_modules[DirectedEdge.get_str_from_types(
+    #             *edge_type) + '/edge_encoder'],
+    #         original_seqs=joint_history,
+    #         lower_indices=first_history_indices
+    #     )
+
+    #     outputs = F.dropout(outputs,
+    #                         p=1. -
+    #                         self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
+    #                         training=(mode == ModeKeys.TRAIN))  # [bs, max_time, enc_rnn_dim]
+
+    #     last_index_per_sequence = -(first_history_indices + 1)
+    #     ret = outputs[torch.arange(
+    #         last_index_per_sequence.shape[0]), last_index_per_sequence]
+    #     if self.hyperparams['dynamic_edges'] == 'yes':
+    #         return ret * combined_edge_masks
+    #     else:
+    #         return ret
+
+    def encode_total_edge_influence(self, mode, encoded_edges, node_history_encoder, batch_size):
+        if self.hyperparams['edge_influence_combine_method'] == 'sum':
+            stacked_encoded_edges = torch.stack(encoded_edges, dim=0)
+            combined_edges = torch.sum(stacked_encoded_edges, dim=0)
+
+        elif self.hyperparams['edge_influence_combine_method'] == 'mean':
+            stacked_encoded_edges = torch.stack(encoded_edges, dim=0)
+            combined_edges = torch.mean(stacked_encoded_edges, dim=0)
+
+        elif self.hyperparams['edge_influence_combine_method'] == 'max':
+            stacked_encoded_edges = torch.stack(encoded_edges, dim=0)
+            combined_edges = torch.max(stacked_encoded_edges, dim=0)
+
+        elif self.hyperparams['edge_influence_combine_method'] == 'bi-rnn':
+            if len(encoded_edges) == 0:
+                combined_edges = torch.zeros(
+                    (batch_size, self.eie_output_dims), device=self.device)
+
+            else:
+                # axis=1 because then we get size [batch_size, max_time, depth]
+                encoded_edges = torch.stack(encoded_edges, dim=1)
+
+                _, state = self.node_modules[self.node_type +
+                                             '/edge_influence_encoder'](encoded_edges)
+                combined_edges = unpack_RNN_state(state)
+                combined_edges = F.dropout(combined_edges,
+                                           p=1. -
+                                           self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
+                                           training=(mode == ModeKeys.TRAIN))
+
+        elif self.hyperparams['edge_influence_combine_method'] == 'attention':
+            # Used in Social Attention (https://arxiv.org/abs/1710.04689)
+            if len(encoded_edges) == 0:
+                combined_edges = torch.zeros(
+                    (batch_size, self.eie_output_dims), device=self.device)
+
+            else:
+                # axis=1 because then we get size [batch_size, max_time, depth]
+                encoded_edges = torch.stack(encoded_edges, dim=1)
+                combined_edges, _ = self.node_modules[self.node_type + '/edge_influence_encoder'](encoded_edges,
+                                                                                                  node_history_encoder)
+                combined_edges = F.dropout(combined_edges,
+                                           p=1. -
+                                           self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
+                                           training=(mode == ModeKeys.TRAIN))
+        return combined_edges
+
     def encode_robot_future(self, mode, robot_present, robot_future) -> torch.Tensor:
         """
         Encodes the robot future (during training) using a bi-directional LSTM
@@ -596,8 +752,8 @@ class MultiHypothesisNet(object):
         initial_mu_model = self.node_modules[self.node_type + '/decoder/initial_mu']
         logits_model = self.node_modules[self.node_type + '/decoder/kalman_logits']
         con_model = self.node_modules[self.node_type + '/con_head']
-        initial_h = initial_h_model(x)
-        initial_mu = initial_mu_model(n_s_t0)
+        initial_h = F.relu(initial_h_model(x))
+        initial_mu = F.relu(initial_mu_model(n_s_t0))
 
         if self.hyperparams['incl_robot_node']:
             input_ = torch.cat([x, initial_mu, x_nr_t], dim=1)
