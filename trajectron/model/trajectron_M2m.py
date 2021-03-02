@@ -107,5 +107,5 @@ class Trajectron(object):
     def predict(self, batch, node_type):
         x, n_s_t0, x_nr_t = self.encoded_x(batch, node_type)
         assert x.is_leaf == False, "You are not backpropagating on the encoder"
-        logits, features = self.predict_kalman_class(x,n_s_t0, x_nr_t, node_type, normalize_weights=False)
+        logits, features = self.predict_kalman_class(x, n_s_t0, x_nr_t, node_type, normalize_weights=False)
         return logits, features

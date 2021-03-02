@@ -20,7 +20,7 @@ from tqdm import tqdm
 import evaluation
 import visualization
 from argument_parser import args
-from m2m_toolbox import bcolors, train_epoch, train_gen_epoch, train_epoch_con, LDAMLoss, SupervisedConLoss
+from m2m_toolbox import FocalLoss, bcolors, train_epoch, train_gen_epoch, train_epoch_con, LDAMLoss, SupervisedConLoss
 from model.dataset import EnvironmentDataset, EnvironmentDatasetKalman, collate
 from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
@@ -302,7 +302,8 @@ if __name__ == '__main__':
     # Classification criterion
     # https://arxiv.org/pdf/1901.05555.pdf
     weight = hyperparams['class_weights'].to(args.device)
-    criterion_1 = nn.CrossEntropyLoss(reduction='none', weight=weight)
+    criterion_1 = nn.CrossEntropyLoss(reduction='none')
+    # criterion_1 = FocalLoss(weight=weight, gamma=0.5, reduction='none')
     # criterion = LDAMLoss(cls_num_list=hyperparams['class_count'], max_m=0.5, s=30, reduction='none').cuda()
     # criterion_2 = SupervisedConLoss(hyperparams['num_classes'])
     #################################
@@ -332,15 +333,15 @@ if __name__ == '__main__':
                                                                             train_data_loader, hyperparams, log_writer, args.device)
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
-            # if epoch % 5:
+            # if epoch <= 150:
             #     epoch_loss = train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
             #                                  train_data_loader, epoch, hyperparams, log_writer, args.device)
             # else:
             class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
                                                 train_data_loader, epoch, hyperparams, log_writer, args.device)
 
-        # if not args.gen and epoch >= 100:
-        #     criterion_1 = nn.CrossEntropyLoss(reduction='none', weight=weight)
+        if not args.gen and epoch >= 100:
+            criterion_1 = nn.CrossEntropyLoss(reduction='none', weight=weight)
 
         #     # Use now weighted sampler
         #     train_data_loader = dict()
@@ -355,6 +356,7 @@ if __name__ == '__main__':
         #         train_data_loader[node_type_data_set.node_type] = node_type_dataloader
         #         # reset lr scheduler
         #         lr_scheduler[node_type_data_set.node_type].load_state_dict(initial_lr_state[node_type])
+
         train_dataset.augment = False
 
         cls_accuracies.append({"epoch": epoch, "accuracy per class": class_acc})

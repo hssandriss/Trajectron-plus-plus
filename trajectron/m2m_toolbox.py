@@ -49,7 +49,8 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
             # inputs_shape =[x[i].shape for i in range(5)]
             y_hat, features = trajectron.predict(inputs, node_type)
             train_loss = criterion(y_hat, targets)
-            pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.mean().item()*1000:.2f}")
+            # import pdb; pdb.set_trace()
+            pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.mean().log10().item():.2f}")
             train_loss.mean().backward()
             # Clipping gradients.
             if hyperparams['grad_clip'] is not None:
@@ -78,18 +79,19 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
         # Logging
         loss = torch.cat(loss_epoch)
         assert class_count_sampled == hyperparams['class_count_dic'], "You didn't go through all data"
-        log_writer.add_scalar(f"{node_type}/classification_g/train/loss", loss.mean().item(), epoch)
+        log_writer.add_scalar(f"{node_type}/classification_g/train/loss", loss.mean().log10().item(), epoch)
         log_writer.add_scalar(f"{node_type}/classification_g/train/accuracy",
                               correct_epoch / data_loader.dataset.len, epoch)
 
         ret_class_acc = {k: class_correct[k] / hyperparams['class_count_dic'][k]
                          for k in hyperparams['class_count_dic'].keys()}
-        ret_class_loss = {k: torch.cat(class_loss[k]).mean().item() for k in hyperparams['class_count_dic'].keys()}
+        ret_class_loss = {k: torch.cat(class_loss[k]).mean().log10().item()
+                          for k in hyperparams['class_count_dic'].keys()}
         for k in hyperparams['class_count_dic'].keys():
             log_writer.add_scalar(f"{node_type}/classification_g/train/loss_class_{k}", ret_class_loss[k], epoch)
             log_writer.add_scalar(f"{node_type}/classification_g/train/accuracy_class_{k}", ret_class_acc[k], epoch)
 
-        print("Epoch Loss: " + bcolors.OKGREEN + str(round(loss.mean().item(), 3)) + bcolors.ENDC)
+        print("Epoch Loss: " + bcolors.OKGREEN + str(round(loss.mean().log10().item(), 3)) + bcolors.ENDC)
         print("Epoch Accuracy: " + bcolors.OKGREEN + str(round(correct_epoch / data_loader.dataset.len, 3)) + bcolors.ENDC)
         print("Accuracy per class: ")
         print(bcolors.OKGREEN + str({k: round(ret_class_acc[k], 3)
@@ -120,7 +122,9 @@ def train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, cr
             # inputs_shape =[x[i].shape for i in range(5)]
             _, features = trajectron.predict(inputs, node_type)
             train_loss, mask_pos, mask_neg = criterion(features, targets)
-            pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f}")
+            pbar.set_description(
+                f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f} Positives: {mask_pos.item():.2f}: Negatives: {mask_neg.item():.2f} ")
+            train_loss.register_hook(lambda grad: print(grad))
             train_loss.backward()
             # Clipping gradients.
             if hyperparams['grad_clip'] is not None:
