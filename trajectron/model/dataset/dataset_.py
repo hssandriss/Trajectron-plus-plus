@@ -20,6 +20,8 @@ class EnvironmentDatasetKalman(object):
         self.node_type_datasets = list()
         self.kalman_classes = list()
         self.class_count_dict = list()
+        self.class_weights = list()
+        self.inv_class_weights = list()
 
         self._augment = False
         self.scores_path = scores_path
@@ -31,6 +33,8 @@ class EnvironmentDatasetKalman(object):
             self.node_type_datasets.append(node_type_dataset)
             self.kalman_classes.append(node_type_dataset.kalman_classes)
             self.class_count_dict.append(node_type_dataset.class_count_dict)
+            self.class_weights.append(node_type_dataset.balanced_class_weights)
+            self.inv_class_weights.append(node_type_dataset.class_weights)
 
     @property
     def augment(self):
@@ -65,7 +69,9 @@ class NodeTypeDatasetKalman(data.Dataset):
         self.len = len(self.index)
         self.edge_types = [edge_type for edge_type in env.get_edge_types() if edge_type[0] is node_type]
         self.load_scores()
-        self.rebalance_bins()
+        #self.rebalance_bins()
+        self.rebalance_3_bins()
+        #import pdb; pdb.set_trace()
 
     def index_env(self, node_freq_mult, scene_freq_mult, **kwargs):
         index = list()
@@ -193,6 +199,91 @@ class NodeTypeDatasetKalman(data.Dataset):
 
             self.kalman_classes = lbls
             self.class_count_dict = dic_compare
+
+    def rebalance_3_bins(self, borders=None):
+        # Borders : tuple(int, int) boarders
+        # TODO Use 1 spaced clusters
+        env_name = self.env.scenes[0].name
+        with open(os.path.join(self.scores_path, '%s_kalman.pkl' % env_name), 'rb') as f:
+            scores = dill.load(f)
+        lbls = (scores / 0.5).astype(np.int)
+        # Calculating class values counts
+        dic = {}
+        for i in range(lbls.max() + 1):
+            dic[i] = 0
+        for l in lbls:
+            dic[l] += 1
+        if borders == None:
+            class_clusters = []
+            borders = []
+            # Stacking the right 0.7 percent into a class
+            limits = [0.6, 0.95]
+            cumsum = 0
+            current_limit = 0
+            current_list = []
+            for c in dic.keys():
+                if current_limit < 2 and cumsum + dic[c] >= scores.shape[0] * limits[current_limit]:
+                    current_list.append(c)
+                    class_clusters.append(current_list)  # incluse
+                    borders.append(c)
+                    cumsum += dic[c]
+                    current_limit += 1
+                    current_list = []
+                elif c == lbls.max():
+                    current_list.append(c)
+                    class_clusters.append(current_list)  # incluse
+                else:
+                    cumsum += dic[c]
+                    current_list.append(c)
+            for c in range(3):
+                lbls = np.where((lbls <= class_clusters[c][-1]) & (lbls >= class_clusters[c][0]), c, lbls)
+        else:
+            # the 2 borders are given
+            class_clusters = []
+            current_list = []
+            current_limit = 0
+            for c in dic.keys():
+                if current_limit < 2 and c < borders[current_limit]:
+                    current_list.append(c)
+                elif current_limit == 2:
+                    current_list.append(c)
+                else:
+                    current_list.append(c)
+                    class_clusters.append(current_list)  # incluse
+                    current_limit += 1
+                    current_list = []
+            class_clusters.append(current_list)  # incluse
+            for c in range(3):
+                lbls = np.where((lbls <= class_clusters[c][-1]) & (lbls >= class_clusters[c][0]), c, lbls)
+        # Calculating class values counts after sorting
+        dic_ = {}
+        for i in range(lbls.max() + 1):
+            dic_[i] = 0
+        for l in lbls:
+            dic_[l] += 1
+        assert sum(dic_.values()) == scores.shape[0]
+
+        # class weights .i.e sampling probability
+        class_count = [*dic_.values()]
+        class_weights = 1. / torch.tensor(class_count, dtype=torch.float)
+        self.class_weights_all = class_weights[lbls]
+        self.weighted_sampler = data.WeightedRandomSampler(
+            weights=self.class_weights_all,
+            num_samples=len(self.class_weights_all),
+            replacement=True)
+
+        # class weights based on effective number of samples
+        # https://arxiv.org/pdf/1901.05555.pdf
+        n = scores.shape[0]
+        beta = (n - 1) / n
+        # import pdb; pdb.set_trace()
+        self.balanced_class_weights = (1 - beta) / (1 - torch.pow(beta, torch.tensor(class_count, dtype=torch.float)))
+        self.balanced_class_weights_all = self.balanced_class_weights[lbls]
+
+        self.class_weights = class_weights
+        self.kalman_classes = lbls
+        self.class_count_dict = dic_
+        self.borders = borders
 
 
 

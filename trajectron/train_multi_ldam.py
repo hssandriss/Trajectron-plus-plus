@@ -151,11 +151,13 @@ def main():
 
         log_writer = SummaryWriter(log_dir=model_dir)
 
-    load_model = False
+    load_model = True
     
     if load_model:
         print('######### LOADING MODEL #####################')
-        model_dir_loaded = '/misc/lmbraid21/ayadim/Trajectron-plus-plus/experiments/pedestrians/models/models_Multi_hyp16_Jan_2021_19_56_41_hotel_ar3'
+        #model_dir_loaded = '/misc/lmbraid21/ayadim/Trajectron-plus-plus/experiments/pedestrians/models/models_Multi_hyp16_Jan_2021_19_56_41_hotel_ar3'
+        #model_dir_loaded = '/misc/lmbraid21/ayadim/Trajectron-plus-plus/experiments/pedestrians/models/models_Multi_hyp13_Jan_2021_23_20_13_eth_ar3/model_classification_22_02_2021-18_50_cosann_10_2_ce_2_conloss_eth_ar3'
+        model_dir_loaded = '/misc/lmbraid21/ayadim/Trajectron-plus-plus/experiments/pedestrians/models/models_Multi_hyp02_Mar_2021_eth_ar3_contrastive_lr001_3classes_'
         ts = 150
     else:
         print('######### Training from scratch #####################')
@@ -378,13 +380,15 @@ def main():
                         model_registrar.parameters(), hyperparams['grad_clip'])
                 optimizer[node_type].step()
 
-                # Stepping forward the learning rate scheduler and annealers.
-                if hyperparams['learning_rate_style'] == 'cosAnnWarmRestart':
-                    lr_scheduler[node_type].step()
-                else:
-                    lr_scheduler[node_type].step()
-
                 curr_iter += 1
+            
+            # Stepping forward the learning rate scheduler and annealers.
+            if hyperparams['learning_rate_style'] == 'cosAnnWarmRestart':
+                lr_scheduler[node_type].step()
+            else:
+                lr_scheduler[node_type].step()
+
+                
             epoch_losses, epoch_losses_n_w, epoch_accuracies = epoch_losses_accuracies(losses_list, losses_n_w_list, accuracies_list, nb_classes, epoch)
             print('Epoch ', epoch, ' losses: ', epoch_losses)
             print('Epoch ', epoch, ' losses non weighted: ', epoch_losses_n_w)

@@ -39,7 +39,6 @@ from tqdm import tqdm
 sys.path.append("../../trajectron")
 import evaluation
 from model.model_registrar import ModelRegistrar
-from model.trajectron_multi import Trajectron
 from tqdm import tqdm
 from utils import prediction_output_to_trajectories
 
@@ -48,156 +47,6 @@ np.random.seed(seed)
 torch.manual_seed(seed)
 if torch.cuda.is_available():
     torch.cuda.manual_seed_all(seed)
-'''
-if __name__ == "__main__":
-    #######################################
-    #### Training Data  Representation ####
-    #######################################
-    with open(args.data_train, 'rb') as f:
-        env_train = dill.load(f, encoding='latin1')
-
-    kalman_classes = rebalance_bins(args.data_kalman)
-    import pdb; pdb.set_trace()
-    
-
-    eval_stg, hyperparams = load_model(args.model, env_train, ts=args.checkpoint)
-
-    if 'override_attention_radius' in hyperparams:
-        for attention_radius_override in hyperparams['override_attention_radius']:
-            node_type1, node_type2, attention_radius = attention_radius_override.split(' ')
-            env_train.attention_radius[(node_type1, node_type2)] = float(attention_radius)
-
-    scenes = env_train.scenes
-
-    print("-- Preparing Train Node Graph")
-    for scene in tqdm(scenes):
-        scene.calculate_scene_graph(env_train.attention_radius,
-                                    hyperparams['edge_addition_filter'],
-                                    hyperparams['edge_removal_filter'])
-
-    ph = hyperparams['prediction_horizon']
-    max_hl = hyperparams['maximum_history_length']
-
-    with torch.no_grad():
-        
-        ############### BEST OF 20 ###############
-        train_features_list = []
-        print("-- Evaluating Train best of 20")
-        for i, scene in enumerate(scenes):
-            print(f"---- Evaluating Train Scene {i + 1}/{len(scenes)}")
-            for t in tqdm(range(0, scene.timesteps, 10)):
-                timesteps = np.arange(t, t + 10)
-                predictions,features = eval_stg.predict(scene,timesteps,ph,num_samples=20,min_history_timesteps=7,min_future_timesteps=12,z_mode=False,gmm_mode=False,full_dist=False)
-                train_features_list.append(features)
-
-    train_features_list = [f for feature in train_features_list for f in feature if len(feature)!= 0] #some predictions are empty
-    train_feat = torch.cat(train_features_list, dim = 0)
-    import pdb; pdb.set_trace()
-    # #######################################
-    # ####     Val Data Representation   ####
-    # #######################################
-    # with open(args.data_val, 'rb') as f:
-    #     env_val = dill.load(f, encoding='latin1')
-
-    # eval_stg, hyperparams = load_model(args.model, env_val, ts=args.checkpoint)
-
-    # if 'override_attention_radius' in hyperparams:
-    #     for attention_radius_override in hyperparams['override_attention_radius']:
-    #         node_type1, node_type2, attention_radius = attention_radius_override.split(' ')
-    #         env_val.attention_radius[(node_type1, node_type2)] = float(attention_radius)
-
-    # scenes = env_val.scenes
-
-    # print("-- Preparing Val Node Graph")
-    # for scene in tqdm(scenes):
-    #     scene.calculate_scene_graph(env_val.attention_radius,
-    #                                 hyperparams['edge_addition_filter'],
-    #                                 hyperparams['edge_removal_filter'])
-
-    # ph = hyperparams['prediction_horizon']
-    # max_hl = hyperparams['maximum_history_length']
-
-    # with torch.no_grad():
-        
-    #     ############### BEST OF 20 ###############
-    #     val_features_list = []
-    #     print("-- Evaluating Val best of 20")
-    #     for i, scene in enumerate(scenes):
-    #         print(f"---- Evaluating Val Scene {i + 1}/{len(scenes)}")
-    #         for t in tqdm(range(0, scene.timesteps, 10)):
-    #             timesteps = np.arange(t, t + 10)
-    #             predictions,features = eval_stg.predict(scene,timesteps,ph,num_samples=20,min_history_timesteps=7,min_future_timesteps=12,z_mode=False,gmm_mode=False,full_dist=False)
-    #             val_features_list.append(features)
-                
-    # val_features_list = [f for feature in val_features_list for f in feature if len(feature)!= 0] #some predictions are empty
-    # val_feat = torch.cat(val_features_list, dim = 0)
-
-    #######################################
-    ####      TSNE Representation      ####
-    #######################################
-    #tsne_input = torch.cat((train_feat, val_feat), dim = 0)
-    tsne_input = train_feat
-    idx_train_tsne = train_feat.shape[0]
-    # train : tsne_input[:idx_train_tsne] , val: tsne_input[idx_train_tsne:]
-    tsne_input = tsne_input.numpy()
-
-    # metric: default is euclidean, 
-    # check perplexity, early_exaggeration, learning_rate
-    tsne_output = TSNE(n_components=2, init = 'pca', ).fit_transform(tsne_input)
-    #tsne_output_normalized = normalize (tsne_output, axis = 0) # l2 normalization of each feature
-    tsne_output_normalized = 2*((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) -1
-
-    import pdb; pdb.set_trace()
-    plt.scatter(tsne_output_normalized[:idx_train_tsne,0], tsne_output_normalized[:idx_train_tsne,1], label='train')
-
-    plt.scatter(tsne_output_normalized[idx_train_tsne:,0], tsne_output_normalized[idx_train_tsne:,1], label='val')
-    plt.legend(loc="best")
-    plt.savefig(os.path.join(args.output_path, args.output_tag + '_normalized_features.png'))
-
-    plt.cla()
-    plt.scatter(tsne_output[:idx_train_tsne,0], tsne_output[:idx_train_tsne,1], label='train')
-    plt.scatter(tsne_output[idx_train_tsne:,0], tsne_output[idx_train_tsne:,1], label='val')
-    plt.legend(loc="best")
-    plt.savefig(os.path.join(args.output_path, args.output_tag + '_features.png'))
-
-    ########### 3D TSNE ##########
-    tsne_output3D = TSNE(n_components=3, init = 'pca', ).fit_transform(tsne_input)
-    tsne_output_normalized3D = 2*((tsne_output3D - tsne_output3D.min(0)) / tsne_output3D.ptp(0)) -1
-
-    plt.cla()
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(tsne_output3D[:idx_train_tsne,0], tsne_output3D[:idx_train_tsne,1], -tsne_output3D[:idx_train_tsne,2], zdir='z', label= 'train')
-    ax.scatter(tsne_output3D[idx_train_tsne:, 0], tsne_output3D[idx_train_tsne:,1], -tsne_output3D[idx_train_tsne:,2], zdir='z', label= 'val')
-    plt.legend(loc="best")
-    plt.savefig(os.path.join(args.output_path, args.output_tag + '_3D_features.png'))
-
-    plt.cla()
-    fig = plt.figure()
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(tsne_output_normalized3D[:idx_train_tsne,0], tsne_output_normalized3D[:idx_train_tsne,1], -tsne_output_normalized3D[:idx_train_tsne,2], zdir='z', label= 'train')
-    ax.scatter(tsne_output_normalized3D[idx_train_tsne:, 0], tsne_output_normalized3D[idx_train_tsne:,1], -tsne_output_normalized3D[idx_train_tsne:,2], zdir='z', label= 'val')
-    plt.legend(loc="best")
-    plt.savefig(os.path.join(args.output_path, args.output_tag + '_normalized3D_features.png'))
-'''
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 seed = 0
@@ -216,7 +65,7 @@ parser.add_argument("--save_output", type=str)
 
 args = parser.parse_args()
 
-def rebalance_bins_train(scores, binary = True):
+def rebalance_bins_train(scores, binary = False):
     n = scores.shape[0]
     beta = (n - 1) / n
     lbls = (scores / 0.5).astype(np.int)
@@ -293,6 +142,7 @@ def rebalance_bins_train(scores, binary = True):
     return kalman_classes, switched_dic
 
 def rebalance_bins_test(scores, switched_dic, binary = True):
+    import pdb; pdb.set_trace()
     n = scores.shape[0]
     beta = (n - 1) / n
     lbls = (scores / 0.5).astype(np.int)
@@ -305,15 +155,17 @@ def rebalance_bins_test(scores, switched_dic, binary = True):
     sum_ = 0
     done = False
     i = lbls.max()
+    import pdb; pdb.set_trace()
     if binary:
         for l in range(len(lbls)):
             lbls[l] = switched_dic[lbls[l]]
-        
+        import pdb; pdb.set_trace()
         dic_compare = {}
         for i in range(lbls.max() + 1):
             dic_compare[i] = 0
         for l in lbls:
             dic_compare[l] += 1 
+        import pdb; pdb.set_trace()
     else:
         while i > 0 and not done: # left 0.7 percent
             if sum_ + dic_[i] >= scores.shape[0]*0.007:
@@ -346,6 +198,69 @@ def rebalance_bins_test(scores, switched_dic, binary = True):
     kalman_classes = lbls
     class_count_dict = dic_compare
     return kalman_classes
+
+
+def rebalance_3_bins( scores, borders = None):
+    lbls = (scores / 0.5).astype(np.int)
+    # Calculating class values counts
+    dic = {}
+    for i in range(lbls.max() + 1):
+        dic[i] = 0
+    for l in lbls:
+        dic[l] += 1
+    if borders == None:
+        # train dataset
+        class_clusters = []
+        borders = []
+        # Stacking the right 0.7 percent into a class
+        limits = [0.6, 0.95]
+        cumsum = 0
+        current_limit = 0
+        current_list = []
+        for c in dic.keys():
+            if current_limit < 2 and cumsum + dic[c] >= scores.shape[0] * limits[current_limit]:
+                current_list.append(c)
+                class_clusters.append(current_list)  # incluse
+                borders.append(c)
+                cumsum += dic[c]
+                current_limit += 1
+                current_list = []
+            elif c == lbls.max():
+                current_list.append(c)
+                class_clusters.append(current_list)  # incluse
+            else:
+                cumsum += dic[c]
+                current_list.append(c)
+        for c in range(3):
+            lbls = np.where((lbls <= class_clusters[c][-1]) & (lbls >= class_clusters[c][0]), c, lbls)
+    else:
+        # the 2 borders are given
+        class_clusters = []
+        current_list = []
+        current_limit = 0
+        for c in dic.keys():
+            if current_limit < 2 and c < borders[current_limit]:
+                current_list.append(c)
+            elif current_limit == 2:
+                current_list.append(c)
+            else:
+                current_list.append(c)
+                class_clusters.append(current_list)  # incluse
+                current_limit += 1
+                current_list = []
+        class_clusters.append(current_list)  # incluse
+        for c in range(3):
+            lbls = np.where((lbls <= class_clusters[c][-1]) & (lbls >= class_clusters[c][0]), c, lbls)
+    # Calculating class values counts after sorting
+    dic_ = {}
+    for i in range(lbls.max() + 1):
+        dic_[i] = 0
+    for l in lbls:
+        dic_[l] += 1
+    assert sum(dic_.values()) == scores.shape[0]
+
+    kalman_classes = lbls
+    return kalman_classes, borders
 
 def load_model(model_dir, env, ts=100):
     model_registrar = ModelRegistrar(model_dir, 'cpu')
@@ -450,20 +365,17 @@ def calculate_epe(pred, gt):
     return epe
 
 def get_feat_balanced(feat, kalman_classes, portion = 1000):
-    #import pdb; pdb.set_trace()
-    majority_idx = np.random.choice(np.where(kalman_classes==0)[0], len(np.where(kalman_classes==1)[0]))
-    minority_idx = np.where(kalman_classes==1)[0]
-    if portion !=0:
-        np.random.shuffle(minority_idx)
-        np.random.shuffle(majority_idx)
-        majority_idx = majority_idx[:portion]
-        minority_idx = minority_idx[:portion]
-    idx = np.concatenate((majority_idx, minority_idx), axis = 0)
-    np.random.shuffle(idx)
-
-    feat_balanced = feat[idx]
-    kalman_classes_balanced = kalman_classes[idx] 
-
+    final_index= np.empty([1], dtype=int)
+    for c in range(max(kalman_classes)+1):
+        idx_c = np.where(kalman_classes==c)[0]
+        if portion != 0:
+            np.random.shuffle(idx_c)
+            idx = idx_c[:portion]
+            final_index = np.concatenate((final_index, idx), axis = 0)
+    final_index = np.delete(final_index, [0])
+    np.random.shuffle(final_index)
+    feat_balanced = feat[final_index]
+    kalman_classes_balanced = kalman_classes[final_index] 
     return feat_balanced, kalman_classes_balanced
 
 def get_colors(n, n_start = 0):
@@ -569,72 +481,54 @@ if __name__ == "__main__":
         assert feat_test.shape[0] == kalman_errors_test.shape[0]
         #with open(args.save_output + '.pkl', 'wb') as f_writer:
         #    dill.dump(kalman_errors, f_writer)
-        kalman_classes, switched_dic = rebalance_bins_train(kalman_errors)
-        kalman_classes_test = rebalance_bins_test(kalman_errors_test, switched_dic)
+        #kalman_classes, switched_dic = rebalance_bins_train(kalman_errors)
+        kalman_classes, borders_train = rebalance_3_bins(kalman_errors)
+        kalman_classes_test, _ = rebalance_3_bins(kalman_errors_test, borders_train)
+        #kalman_classes_test = rebalance_bins_test(kalman_errors_test, switched_dic)
 
         #######################################
         ####      TSNE Representation      ####
         #######################################
         feat_balanced, kalman_classes_balanced = get_feat_balanced(feat, kalman_classes)
-        feat_balanced_test, kalman_classes_balanced_test = get_feat_balanced(feat, kalman_classes_test)
+        #feat_balanced_test, kalman_classes_balanced_test = get_feat_balanced(feat, kalman_classes_test)
         #tsne_input = torch.cat((train_feat, val_feat), dim = 0)
         train_idx = len(feat_balanced)
-        tsne_input = np.concatenate((feat_balanced, feat_balanced_test), axis = 0)
+        tsne_input = feat_balanced
+        #tsne_input = np.concatenate((feat_balanced, feat_balanced_test), axis = 0)
         
         # metric: default is euclidean, 
         # check perplexity, early_exaggeration, learning_rate
         print('---------- Start TSNE ----------')
         tsne_output = TSNE(n_components=2, init = 'pca').fit_transform(tsne_input)
-        import pdb; pdb.set_trace()
         #tsne_output_normalized = normalize (tsne_output, axis = 0) # l2 normalization of each feature
         tsne_output_normalized = 2*((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) -1
 
         tsne_output_train = tsne_output[: train_idx]
         tsne_output_test = tsne_output[train_idx:]
 
-        tsne_output_normalized_train = tsne_output_normalized[: train_idx]
-        tsne_output_normalized_test = tsne_output_normalized[train_idx:]
+        #tsne_output_normalized_train = tsne_output_normalized[: train_idx]
+        #tsne_output_normalized_test = tsne_output_normalized[train_idx:]
         
         colors_train = get_colors(kalman_classes_balanced.max())
-        colors_test = get_colors(n = kalman_classes_balanced.max()+ kalman_classes_balanced_test.max()+1, n_start= kalman_classes_balanced.max() + 1)
+        #colors_test = get_colors(n = kalman_classes_balanced.max()+ kalman_classes_balanced_test.max()+1, n_start= kalman_classes_balanced.max() + 1)
         fig = plt.figure(figsize=(8,8))
-        kalman_classes_balanced_min = kalman_classes_balanced[np.where(kalman_classes_balanced==1)[0]]
-        kalman_classes_balanced_maj = kalman_classes_balanced[np.where(kalman_classes_balanced==0)[0]]
-        kalman_classes_balanced_test_min = kalman_classes_balanced_test[np.where(kalman_classes_balanced_test==1)[0]]
-        kalman_classes_balanced_test_maj = kalman_classes_balanced_test[np.where(kalman_classes_balanced_test==0)[0]]
+        
+        for i in range(kalman_classes_balanced.max()+1):
+            output_c = tsne_output_train[np.where(kalman_classes_balanced==i)[0]]
+            plt.scatter(output_c[:,0], output_c[:,1], color = colors_train[i], label = 'train_class_'+ str(i))
+        #plt.scatter(tsne_output_train_maj[:,0], tsne_output_train_maj[:,1], color = colors_train[1], label = 'train_majority')
 
-        tsne_output_train_min = tsne_output_train[np.where(kalman_classes_balanced==1)[0]]
-        tsne_output_train_maj = tsne_output_train[np.where(kalman_classes_balanced==0)[0]]
-
-        tsne_output_test_min = tsne_output_test[np.where(kalman_classes_balanced_test==1)[0]]
-        tsne_output_test_maj = tsne_output_test[np.where(kalman_classes_balanced_test==0)[0]]
-
-
-        plt.scatter(tsne_output_train_min[:,0], tsne_output_train_min[:,1], color = colors_train[0], label = 'train_minority')
-        plt.scatter(tsne_output_train_maj[:,0], tsne_output_train_maj[:,1], color = colors_train[1], label = 'train_majority')
-
-        plt.scatter(tsne_output_test_min[:,0], tsne_output_test_min[:,1], color = colors_test[0], label = 'test_minority')
-        plt.scatter(tsne_output_test_maj[:,0], tsne_output_test_maj[:,1], color = colors_test[1], label = 'test_majority')
-
-        '''labels_train = [str(i)+'_train' for i in range(kalman_classes_balanced.max()+1)]
-        labels_test = [str(i)+'_test' for i in range(kalman_classes_balanced_test.max()+1)]
-        cb = plt.colorbar()
-        loc = np.arange(0,max(kalman_classes_balanced)*2,max(kalman_classes_balanced)/float(len(colors_train)))
-        #loc_test = np.arange(0,max(kalman_classes_balanced_test),max(kalman_classes_balanced_test)/float(len(colors_test)))
-        cb.set_ticks(loc)
-        cb.set_ticklabels(labels_train+labels_test)'''
         plt.legend()
         plt.savefig(os.path.join(args.model, args.tagplot+'.png'))
-        import pdb; pdb.set_trace()
+        #import pdb; pdb.set_trace()
         for label in range(kalman_classes_balanced.max()+1):
             idx_label_train =  np.where(kalman_classes_balanced == label)[0]
-            idx_label_test =  np.where(kalman_classes_balanced_test == label)[0]
+            #idx_label_test =  np.where(kalman_classes_balanced_test == label)[0]
             tsne_output_train_label = tsne_output_train[np.where(kalman_classes_balanced==label)[0]]
-            tsne_output_test_label = tsne_output_test[np.where(kalman_classes_balanced_test==label)[0]]
+            #tsne_output_test_label = tsne_output_test[np.where(kalman_classes_balanced_test==label)[0]]
             plt.clf()
             plt.scatter(tsne_output_train_label[:,0], tsne_output_train_label[:,1] , c = colors_train[label], label = 'train')
-
-            plt.scatter(tsne_output_test_label[:,0], tsne_output_test_label[:,1], color = colors_test[label], label = 'test')
+            #plt.scatter(tsne_output_test_label[:,0], tsne_output_test_label[:,1], color = colors_test[label], label = 'test')
 
             plt.legend()
             plt.savefig(os.path.join(args.model ,args.tagplot+ '_class_'+ str(label)+'.png'))

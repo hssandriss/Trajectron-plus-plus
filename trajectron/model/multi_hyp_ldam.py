@@ -166,9 +166,9 @@ class MultiHypothesisNet(object):
         ####################
 
         if self.hyperparams['incl_robot_node']:
-            decoder_input_dims = self.pred_state_length*20 + self.robot_state_length + z_size
+            decoder_input_dims = self.pred_state_length+ self.robot_state_length + z_size
         else:
-            decoder_input_dims = self.pred_state_length *20 + z_size
+            decoder_input_dims = self.pred_state_length  + z_size
 
         
         self.add_submodule(self.node_type + '/decoder/initial_h',
@@ -702,17 +702,17 @@ class MultiHypothesisNet(object):
         initial_mu_model = self.node_modules[self.node_type + '/decoder/initial_mu']
         logits_model = self.node_modules[self.node_type + '/decoder/kalman_logits']
         initial_h = initial_h_model(z)
-        #initial_h = F.relu(initial_h)
+        initial_h = F.relu(initial_h)
         initial_mu = initial_mu_model(n_s_t0)  # [bs, num_hyp *2]
-        #initial_mu = F.relu(initial_mu)
+        initial_mu = F.relu(initial_mu)
 
         if self.hyperparams['incl_robot_node']:
             input_ = torch.cat([z, initial_mu.repeat(1, 20), x_nr_t], dim=1)
         else:
-            input_ = torch.cat([z, initial_mu.repeat(1, 20)], dim=1)
+            #input_ = torch.cat([z, initial_mu.repeat(1, 20)], dim=1)
+            input_ = torch.cat([z, initial_mu], dim=1)
 
         features = torch.cat([input_, initial_h], dim=1)
-        #import pdb; pdb.set_trace()
         logits = logits_model(features)
         return logits, features
 
