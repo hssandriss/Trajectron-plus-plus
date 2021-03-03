@@ -49,7 +49,7 @@ args = parser.parse_args()
 
 
 def get_cmap(n, name='hsv'):
-    '''Returns a function that maps each index in 0, 1, ..., n-1 to a distinct 
+    '''Returns a function that maps each index in 0, 1, ..., n-1 to a distinct
     RGB color; the keyword argument name must be a standard mpl colormap name.'''
     return plt.cm.get_cmap(name, n)
 
@@ -315,8 +315,18 @@ def calculate_epe(pred, gt):
     return epe
 
 
+def get_colors(n, n_start=0):
+    if n <= 13:
+        list_colors = ['red', 'green', 'blue', 'purple', 'navy', 'brown',
+                       'yellow', 'black', 'orange', 'pink', 'cyan', 'grey', 'lightgreen']
+        colors = list_colors[n_start:n + 1]
+    else:
+        colors = [(np.random.choice(range(256)), np.random.choice(range(256)), np.random.choice(range(256)))
+                  for i in range(n + 1 - n_start)]
+    return colors
+
+
 if __name__ == "__main__":
-    import pdb; pdb.set_trace()
 
     with open(args.data, 'rb') as f:
         env = dill.load(f, encoding='latin1')
@@ -338,26 +348,25 @@ if __name__ == "__main__":
     ph = hyperparams['prediction_horizon']
     max_hl = hyperparams['maximum_history_length']
 
-    if args.data2:
-        with open(args.data2, 'rb') as f:
-            env2 = dill.load(f, encoding='latin1')
-        eval_stg2, hyperparams2 = load_model(args.model, env2, ts=args.checkpoint, extra_tag=args.chkpt_extra_tag)
+    # if args.data2:
 
-        if 'override_attention_radius' in hyperparams2:
-            for attention_radius_override in hyperparams2['override_attention_radius']:
-                node_type1, node_type2, attention_radius = attention_radius_override.split(' ')
-                env2.attention_radius[(node_type1, node_type2)] = float(attention_radius)
-        scenes2 = env2.scenes
+    #     with open(args.data2, 'rb') as f:
+    #         env2 = dill.load(f, encoding='latin1')
+    #     eval_stg2, hyperparams2 = load_model(args.model, env2, ts=args.checkpoint, extra_tag=args.chkpt_extra_tag)
 
-        print("-- Preparing Node Graph")
-        for scene in tqdm(scenes2):
-            scene.calculate_scene_graph(env2.attention_radius,
-                                        hyperparams2['edge_addition_filter'],
-                                        hyperparams2['edge_removal_filter'])
-        ph2 = hyperparams2['prediction_horizon']
-        max_hl2 = hyperparams2['maximum_history_length']
+    #     if 'override_attention_radius' in hyperparams2:
+    #         for attention_radius_override in hyperparams2['override_attention_radius']:
+    #             node_type1, node_type2, attention_radius = attention_radius_override.split(' ')
+    #             env2.attention_radius[(node_type1, node_type2)] = float(attention_radius)
+    #     scenes2 = env2.scenes
 
-    # colors = random.sample(all_colors, num_classes)
+    #     print("-- Preparing Node Graph")
+    #     for scene in tqdm(scenes2):
+    #         scene.calculate_scene_graph(env2.attention_radius,
+    #                                     hyperparams2['edge_addition_filter'],
+    #                                     hyperparams2['edge_removal_filter'])
+    #     ph2 = hyperparams2['prediction_horizon']
+    #     max_hl2 = hyperparams2['maximum_history_length']
 
     with torch.no_grad():
         epes = []
@@ -390,108 +399,146 @@ if __name__ == "__main__":
         # kalman_classes, class_count_dict = rebalance_bins(kalman_errors, stack_right=0.007, pred_num_classes=None)
         kalman_classes, class_count_dict, borders = rebalance_3_bins(kalman_errors)
         # kalman_classes, class_count_dict, border = rebalance_bins_binary(kalman_errors)
-        import pdb; pdb.set_trace()
+        assert kalman_classes.shape[0] == feat.shape[0]
         num_classes = len(class_count_dict)
         # Subsampling from the training data
-        features_list = []
-        targets_list = []
+
         min_nsamples = min([class_count_dict[k] for k in range(num_classes)])
-        for target in range(num_classes):
-            target_idx = np.squeeze((kalman_classes == target).nonzero())
-            sampled_idx = np.random.choice(target_idx, min_nsamples)
-            features_list.append(feat[sampled_idx])
-            targets_list.append(kalman_classes[sampled_idx])
-        feat = torch.cat(features_list, dim=0)
-        kalman_classes = np.concatenate(targets_list, axis=0)
+        # min_nsamples = 1000
+        total_sampled_indexes = []
+        for c in range(num_classes):
+            idx_c = np.where(kalman_classes == c)[0]
+            np.random.shuffle(idx_c)
+            total_sampled_indexes.append(idx_c[:min_nsamples])
+        total_sampled_indexes = np.concatenate(total_sampled_indexes)
+        np.random.shuffle(total_sampled_indexes)
+        feat = feat[total_sampled_indexes]
+        kalman_classes = kalman_classes[total_sampled_indexes]
         print()
-        if args.data2:
-            epes = []
-            features_list = []
-            for i, scene in enumerate(scenes2):
-                print(f"---- Evaluating Scene {i + 1}/{len(scenes)}")
-                timesteps = np.arange(scene.timesteps)
-                predictions, features = eval_stg.predict(scene,
-                                                         timesteps,
-                                                         ph2,
-                                                         min_history_timesteps=7,  # if 'test' in args.data else 1,
-                                                         min_future_timesteps=12)
-                (prediction_dict, histories_dict, futures_dict) = prediction_output_to_trajectories(predictions,
-                                                                                                    scene.dt,
-                                                                                                    max_hl2,
-                                                                                                    ph2,
-                                                                                                    prune_ph_to_future=True)
-                for t in prediction_dict.keys():
-                    for node in prediction_dict[t].keys():
-                        z_future = get_kalman_filter_result(histories_dict[t][node])
-                        epe = calculate_epe(z_future, futures_dict[t][node][-1, :])
-                        epes.append(epe)
-                features_list.append(features)
-            feat2 = torch.cat([features_list[i][0] for i in range(len(features_list))], dim=0)
-            kalman_errors = np.array(epes)
-            print('Kalman (FDE): %.2f' % (np.mean(kalman_errors)))
-            assert feat2.shape[0] == kalman_errors.shape[0]
-            import pdb; pdb.set_trace()
-            # kalman_classes2, _ = rebalance_bins(kalman_errors, stack_right=None, pred_num_classes=num_classes)
-            kalman_classes2, _, _ = rebalance_3_bins(kalman_errors, borders=borders)
-            # kalman_classes2, _, _ = rebalance_bins_binary(kalman_errors, border=border)
+        # import pdb; pdb.set_trace()
+        # if args.data2:
+        #     epes = []
+        #     features_list = []
+        #     for i, scene in enumerate(scenes2):
+        #         print(f"---- Evaluating Scene {i + 1}/{len(scenes)}")
+        #         timesteps = np.arange(scene.timesteps)
+        #         predictions, features = eval_stg.predict(scene,
+        #                                                  timesteps,
+        #                                                  ph2,
+        #                                                  min_history_timesteps=7,  # if 'test' in args.data else 1,
+        #                                                  min_future_timesteps=12)
+        #         (prediction_dict, histories_dict, futures_dict) = prediction_output_to_trajectories(predictions,
+        #                                                                                             scene.dt,
+        #                                                                                             max_hl2,
+        #                                                                                             ph2,
+        #                                                                                             prune_ph_to_future=True)
+        #         for t in prediction_dict.keys():
+        #             for node in prediction_dict[t].keys():
+        #                 z_future = get_kalman_filter_result(histories_dict[t][node])
+        #                 epe = calculate_epe(z_future, futures_dict[t][node][-1, :])
+        #                 epes.append(epe)
+        #         features_list.append(features)
+        #     feat2 = torch.cat([features_list[i][0] for i in range(len(features_list))], dim=0)
+        #     kalman_errors2 = np.array(epes)
+        #     print('Kalman (FDE): %.2f' % (np.mean(kalman_errors2)))
+        #     assert feat2.shape[0] == kalman_errors2.shape[0]
+        #     import pdb; pdb.set_trace()
+        #     # kalman_classes2, _ = rebalance_bins(kalman_errors, stack_right=None, pred_num_classes=num_classes)
+        #     kalman_classes2, _, _ = rebalance_3_bins(kalman_errors2, borders=borders)
+        #     # kalman_classes2, _, _ = rebalance_bins_binary(kalman_errors, border=border)
+    tsne_input = feat.numpy()
+    print('---------- Start TSNE ----------')
+    tsne_output = TSNE(n_components=2, init='pca').fit_transform(tsne_input)
+    # tsne_output_normalized = normalize (tsne_output, axis = 0) # l2 normalization of each feature
+    tsne_output_normalized = 2 * ((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) - 1
 
-        #######################################
-        ####      TSNE Representation      ####
-        #######################################
-        print('---------- Start TSNE ----------')
-        tsne_input = feat
-        tsne_input = tsne_input.numpy()
-        tsne_output = TSNE(n_components=2, init='pca', perplexity=50).fit_transform(tsne_input)
-        tsne_output_normalized = 2 * ((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) - 1
-        if args.data2:
-            tsne_input2 = feat2
-            tsne_input2 = tsne_input2.numpy()
-            tsne_output2 = TSNE(n_components=2, init='pca', perplexity=50).fit_transform(tsne_input2)
-            tsne_output_normalized2 = 2 * ((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) - 1
+    # tsne_output_train = tsne_output[: train_idx]
+    # tsne_output_test = tsne_output[train_idx:]
 
-        print("---------- Saving Plots ---------- ")
-        N = num_classes
-        # define the colormap
-        cmap = plt.cm.jet
-        # extract all colors from the .jet map
-        # cmaplist = [cmap(i) for i in range(0, cmap.N, cmap.N//N)]
-        cmaplist = [cmap(i) for i in range(cmap.N)]
-        # create the new map
-        cmap = cmap.from_list('Custom cmap', cmaplist, cmap.N)
-        # define the bins and normalize
-        bounds, step = np.linspace(0, N, N + 1, retstep=True)
-        norm = mpl.colors.BoundaryNorm(bounds, cmap.N)
+    #tsne_output_normalized_train = tsne_output_normalized[: train_idx]
+    #tsne_output_normalized_test = tsne_output_normalized[train_idx:]
+    print("---------- Saving Plots ---------- ")
 
-        fig = plt.figure(figsize=(8, 8))
-        plt.scatter(tsne_output[:, 0], tsne_output[:, 1], c=kalman_classes, cmap=cmap, norm=norm)
-        cb = plt.colorbar(spacing='proportional', ticks=bounds)
-        cb.set_label('Kalman classes')
-        figname = os.path.join(args.model, args.tagplot + '.png')
+    colors_train = get_colors(kalman_classes.max())
+    # import pdb; pdb.set_trace()
+    #colors_test = get_colors(n = kalman_classes_balanced.max()+ kalman_classes_balanced_test.max()+1, n_start= kalman_classes_balanced.max() + 1)
+    fig = plt.figure(figsize=(8, 8))
+
+    for i in range(kalman_classes.max() + 1):
+        output_c = tsne_output[np.where(kalman_classes == i)[0]]
+        plt.scatter(output_c[:, 0], output_c[:, 1], color=colors_train[i], label='train_class_' + str(i))
+        plt.legend()
+        plt.savefig(os.path.join(args.model, args.tagplot + '.png'))
+        #import pdb; pdb.set_trace()
+    for label in range(kalman_classes.max() + 1):
+        idx_label_train = np.where(kalman_classes == label)[0]
+        #idx_label_test =  np.where(kalman_classes_balanced_test == label)[0]
+        tsne_output_train_label = tsne_output[np.where(kalman_classes == label)[0]]
+        #tsne_output_test_label = tsne_output_test[np.where(kalman_classes_balanced_test==label)[0]]
+        plt.clf()
+        plt.scatter(tsne_output_train_label[:, 0], tsne_output_train_label[:, 1], c=colors_train[label], label='train')
+        #plt.scatter(tsne_output_test_label[:,0], tsne_output_test_label[:,1], color = colors_test[label], label = 'test')
+
+        plt.legend()
+        plt.savefig(os.path.join(args.model, args.tagplot + '_class_' + str(label) + '.png'))
+
+    #######################################
+    ####      TSNE Representation      ####
+    #######################################
+    # print('---------- Start TSNE ----------')
+    # tsne_input = feat
+    # tsne_input = tsne_input.numpy()
+    # tsne_output = TSNE(n_components=2, init='pca').fit_transform(tsne_input)
+    # tsne_output_normalized = 2 * ((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) - 1
+    # # if args.data2:
+    # #     tsne_input2 = feat2
+    # #     tsne_input2 = tsne_input2.numpy()
+    # #     tsne_output2 = TSNE(n_components=2, init='pca', perplexity=50).fit_transform(tsne_input2)
+    # #     tsne_output_normalized2 = 2 * ((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) - 1
+
+    print("---------- Saving Plots ---------- ")
+    N = num_classes
+    # define the colormap
+    cmap = plt.cm.jet
+    # extract all colors from the .jet map
+    # cmaplist = [cmap(i) for i in range(0, cmap.N, cmap.N//N)]
+    cmaplist = [cmap(i) for i in range(cmap.N)]
+    # create the new map
+    cmap = cmap.from_list('Custom cmap', cmaplist, cmap.N)
+    # define the bins and normalize
+    bounds, step = np.linspace(0, N, N + 1, retstep=True)
+    norm = mpl.colors.BoundaryNorm(bounds, cmap.N)
+
+    fig = plt.figure(figsize=(10, 8))
+    plt.scatter(tsne_output[:, 0], tsne_output[:, 1], c=kalman_classes, cmap=cmap, norm=norm)
+    cb = plt.colorbar(spacing='proportional', ticks=bounds)
+    cb.set_label('Kalman classes')
+    figname = os.path.join(args.model, args.tagplot + '_2.png')
+    plt.savefig(figname)
+
+    labels = [i for i in range(num_classes)]
+    for label in labels:
+        idx_label = np.where(kalman_classes == label)[0]
+        tsne_output_label = tsne_output[idx_label, :]
+        plt.clf()
+        plt.scatter(tsne_output_label[:, 0], tsne_output_label[:, 1], c=np.array(
+            [label for _ in range(len(idx_label))]), cmap=cmap, norm=norm)
+        figname = os.path.join(args.model, args.tagplot + '_class_' + str(label) + '.png')
         plt.savefig(figname)
 
-        labels = [i for i in range(num_classes)]
-        for label in labels:
-            idx_label = np.where(kalman_classes == label)[0]
-            tsne_output_label = tsne_output[idx_label, :]
-            plt.clf()
-            plt.scatter(tsne_output_label[:, 0], tsne_output_label[:, 1], c=np.array(
-                [label for _ in range(len(idx_label))]), cmap=cmap, norm=norm)
-            figname = os.path.join(args.model, args.tagplot + '_class_' + str(label) + '.png')
-            plt.savefig(figname)
-
-        if args.data2:
-            plt.clf()
-            fig = plt.figure(figsize=(8, 8))
-            plt.scatter(tsne_output2[:, 0], tsne_output2[:, 1], c=kalman_classes2, cmap=cmap, norm=norm)
-            cb = plt.colorbar(spacing='proportional', ticks=bounds)
-            cb.set_label('Kalman classes')
-            figname = os.path.join(args.model, args.tagplot + '_data2.png')
-            plt.savefig(figname)
-            for label in labels:
-                idx_label = np.where(kalman_classes2 == label)[0]
-                tsne_output_label = tsne_output2[idx_label, :]
-                plt.clf()
-                plt.scatter(tsne_output_label[:, 0], tsne_output_label[:, 1], c=np.array(
-                    [label for _ in range(len(idx_label))]), cmap=cmap, norm=norm)
-                figname = os.path.join(args.model, args.tagplot + '_class_' + str(label) + '_data2.png')
-                plt.savefig(figname)
+    # if args.data2:
+    #     plt.clf()
+    #     fig = plt.figure(figsize=(8, 8))
+    #     plt.scatter(tsne_output2[:, 0], tsne_output2[:, 1], c=kalman_classes2, cmap=cmap, norm=norm)
+    #     cb = plt.colorbar(spacing='proportional', ticks=bounds)
+    #     cb.set_label('Kalman classes')
+    #     figname = os.path.join(args.model, args.tagplot + '_data2.png')
+    #     plt.savefig(figname)
+    #     for label in labels:
+    #         idx_label = np.where(kalman_classes2 == label)[0]
+    #         tsne_output_label = tsne_output2[idx_label, :]
+    #         plt.clf()
+    #         plt.scatter(tsne_output_label[:, 0], tsne_output_label[:, 1], c=np.array(
+    #             [label for _ in range(len(idx_label))]), cmap=cmap, norm=norm)
+    #         figname = os.path.join(args.model, args.tagplot + '_class_' + str(label) + '_data2.png')
+    #         plt.savefig(figname)

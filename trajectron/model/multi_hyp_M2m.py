@@ -510,61 +510,37 @@ class MultiHypothesisNet(object):
         else:
             return ret
 
-    def encode_total_edge_influence(self, mode, encoded_edges, node_history_encoder, batch_size):
-        if self.hyperparams['edge_influence_combine_method'] == 'sum':
-            stacked_encoded_edges = torch.stack(encoded_edges, dim=0)
-            combined_edges = torch.sum(stacked_encoded_edges, dim=0)
+    def encode_preprocessed_edge(self,
+                                 mode,
+                                 joint_history,
+                                 combined_edge_masks,
+                                 edge_type,
+                                 first_history_indices):
+        outputs, _ = run_lstm_on_variable_length_seqs(
+            self.node_modules[DirectedEdge.get_str_from_types(
+                *edge_type) + '/edge_encoder'],
+            original_seqs=joint_history,
+            lower_indices=first_history_indices
+        )
 
-        elif self.hyperparams['edge_influence_combine_method'] == 'mean':
-            stacked_encoded_edges = torch.stack(encoded_edges, dim=0)
-            combined_edges = torch.mean(stacked_encoded_edges, dim=0)
+        outputs = F.dropout(outputs,
+                            p=1. -
+                            self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
+                            training=(mode == ModeKeys.TRAIN))  # [bs, max_time, enc_rnn_dim]
 
-        elif self.hyperparams['edge_influence_combine_method'] == 'max':
-            stacked_encoded_edges = torch.stack(encoded_edges, dim=0)
-            combined_edges = torch.max(stacked_encoded_edges, dim=0)
-
-        elif self.hyperparams['edge_influence_combine_method'] == 'bi-rnn':
-            if len(encoded_edges) == 0:
-                combined_edges = torch.zeros(
-                    (batch_size, self.eie_output_dims), device=self.device)
-
-            else:
-                # axis=1 because then we get size [batch_size, max_time, depth]
-                encoded_edges = torch.stack(encoded_edges, dim=1)
-
-                _, state = self.node_modules[self.node_type +
-                                             '/edge_influence_encoder'](encoded_edges)
-                combined_edges = unpack_RNN_state(state)
-                combined_edges = F.dropout(combined_edges,
-                                           p=1. -
-                                           self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
-                                           training=(mode == ModeKeys.TRAIN))
-
-        elif self.hyperparams['edge_influence_combine_method'] == 'attention':
-            # Used in Social Attention (https://arxiv.org/abs/1710.04689)
-            if len(encoded_edges) == 0:
-                combined_edges = torch.zeros(
-                    (batch_size, self.eie_output_dims), device=self.device)
-
-            else:
-                # axis=1 because then we get size [batch_size, max_time, depth]
-                encoded_edges = torch.stack(encoded_edges, dim=1)
-                combined_edges, _ = self.node_modules[self.node_type + '/edge_influence_encoder'](encoded_edges,
-                                                                                                  node_history_encoder)
-                combined_edges = F.dropout(combined_edges,
-                                           p=1. -
-                                           self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
-                                           training=(mode == ModeKeys.TRAIN))
-        return combined_edges
+        last_index_per_sequence = -(first_history_indices + 1)
+        ret = outputs[torch.arange(
+            last_index_per_sequence.shape[0]), last_index_per_sequence]
+        if self.hyperparams['dynamic_edges'] == 'yes':
+            return ret * combined_edge_masks
+        else:
+            return ret
 
     def preprocess_edge(self,
-                        mode,
-                        node_history,
                         node_history_st,
                         edge_type,
                         neighbors,
-                        neighbors_edge_value,
-                        first_history_indices):
+                        neighbors_edge_value):
         max_hl = self.hyperparams['maximum_history_length']
         edge_states_list = list()  # list of [#of neighbors, max_ht, state_dim]
         # Get neighbors for timestep in batch
@@ -635,6 +611,53 @@ class MultiHypothesisNet(object):
         joint_history = torch.cat(
             [combined_neighbors, node_history_st], dim=-1)
         return joint_history, combined_edge_masks
+
+    def encode_total_edge_influence(self, mode, encoded_edges, node_history_encoder, batch_size):
+        if self.hyperparams['edge_influence_combine_method'] == 'sum':
+            stacked_encoded_edges = torch.stack(encoded_edges, dim=0)
+            combined_edges = torch.sum(stacked_encoded_edges, dim=0)
+
+        elif self.hyperparams['edge_influence_combine_method'] == 'mean':
+            stacked_encoded_edges = torch.stack(encoded_edges, dim=0)
+            combined_edges = torch.mean(stacked_encoded_edges, dim=0)
+
+        elif self.hyperparams['edge_influence_combine_method'] == 'max':
+            stacked_encoded_edges = torch.stack(encoded_edges, dim=0)
+            combined_edges = torch.max(stacked_encoded_edges, dim=0)
+
+        elif self.hyperparams['edge_influence_combine_method'] == 'bi-rnn':
+            if len(encoded_edges) == 0:
+                combined_edges = torch.zeros(
+                    (batch_size, self.eie_output_dims), device=self.device)
+
+            else:
+                # axis=1 because then we get size [batch_size, max_time, depth]
+                encoded_edges = torch.stack(encoded_edges, dim=1)
+
+                _, state = self.node_modules[self.node_type +
+                                             '/edge_influence_encoder'](encoded_edges)
+                combined_edges = unpack_RNN_state(state)
+                combined_edges = F.dropout(combined_edges,
+                                           p=1. -
+                                           self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
+                                           training=(mode == ModeKeys.TRAIN))
+
+        elif self.hyperparams['edge_influence_combine_method'] == 'attention':
+            # Used in Social Attention (https://arxiv.org/abs/1710.04689)
+            if len(encoded_edges) == 0:
+                combined_edges = torch.zeros(
+                    (batch_size, self.eie_output_dims), device=self.device)
+
+            else:
+                # axis=1 because then we get size [batch_size, max_time, depth]
+                encoded_edges = torch.stack(encoded_edges, dim=1)
+                combined_edges, _ = self.node_modules[self.node_type + '/edge_influence_encoder'](encoded_edges,
+                                                                                                  node_history_encoder)
+                combined_edges = F.dropout(combined_edges,
+                                           p=1. -
+                                           self.hyperparams['rnn_kwargs']['dropout_keep_prob'],
+                                           training=(mode == ModeKeys.TRAIN))
+        return combined_edges
 
     # def encode_edge(self,
     #                 mode,
