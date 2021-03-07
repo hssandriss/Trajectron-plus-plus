@@ -104,7 +104,11 @@ if __name__ == '__main__':
 
     log_writer = None
     model_dir = None
-    model_tag = "_".join(["model_classification", datetime.now().strftime("%d_%m_%Y-%H_%M"), args.log_tag])
+    # import pdb; pdb.set_trace()
+    if args.model_tag:
+        model_tag = args.model_tag
+    else:
+        model_tag = "_".join(["model_classification", datetime.now().strftime("%d_%m_%Y-%H_%M"), args.log_tag])
     # model_tag = "model_classification_22_02_2021-12_27_cosann_10_2_ce_2_conloss_eth_ar3"
     if not args.debug:
         # Create the log and model directiory if they're not present.
@@ -163,7 +167,7 @@ if __name__ == '__main__':
     hyperparams['learning_rate_style'] = 'cosannw'
 
     # hyperparams['learning_rate'] = 0.01  # Override lr
-    import pdb; pdb.set_trace()
+    # import pdb; pdb.set_trace()
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(args.device)
 
@@ -239,6 +243,7 @@ if __name__ == '__main__':
                 print(f"Created Scene Graph for Evaluation Scene {i}")
     # Creating Models
     if args.net_g_ts:
+        print("Loading baseline classifier g:")
         model_registrar_g = ModelRegistrar(model_dir, args.device)
         model_registrar_g.load_models(args.net_g_ts, args.net_g_extra_tag)
         trajectron_g = Trajectron(model_registrar_g,
@@ -259,6 +264,7 @@ if __name__ == '__main__':
     model_registrar = ModelRegistrar(model_dir, args.device)
 
     if args.net_trajectron_ts:
+        import pdb; pdb.set_trace()
         model_registrar.load_models(args.net_trajectron_ts, extra_tag=extra_tag)
     trajectron = Trajectron(model_registrar,
                             hyperparams,
@@ -328,11 +334,13 @@ if __name__ == '__main__':
         class_loss = 0
         epoch_loss = 0
         if epoch >= args.warm + 1 and args.gen:
+            print("**** Train Epoch with generation ****")
             # Generation process and training with generated data
-            train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+            train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
                                                                             train_data_loader, hyperparams, log_writer, args.device)
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
+            print("**** Train Epoch without generation ****")
             # if epoch <= 150:
             #     epoch_loss = train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
             #                                  train_data_loader, epoch, hyperparams, log_writer, args.device)
@@ -364,13 +372,13 @@ if __name__ == '__main__':
         losses.append({"epoch": epoch, "loss": epoch_loss})
         if (args.save_every is not None and epoch % args.save_every == 0) or epoch == args.train_epochs:
             model_registrar.save_models(epoch, extra_tag)
-            with open(f'cls_accuracies_{extra_tag}.json', 'w') as fout:
+            with open(f'plots&runs/cls_accuracies_{extra_tag}.json', 'w') as fout:
                 json.dump(cls_accuracies, fout)
-            with open(f'cls_losses_{extra_tag}.json', 'w') as fout:
+            with open(f'plots&runs/cls_losses_{extra_tag}.json', 'w') as fout:
                 json.dump(cls_losses, fout)
-            with open(f'cls_generated_{extra_tag}.json', 'w') as fout:
+            with open(f'plots&runs/cls_generated_{extra_tag}.json', 'w') as fout:
                 json.dump(cls_generated, fout)
-            with open(f'losses_{extra_tag}.json', 'w') as fout:
+            with open(f'plots&runs/losses_{extra_tag}.json', 'w') as fout:
                 json.dump(losses, fout)
 
     # train_loss_df.to_csv('./training_logs/train_loss_%s_%s.csv' % (args.log_tag, extra_tag), sep=";")

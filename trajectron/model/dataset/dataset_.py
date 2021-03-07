@@ -340,7 +340,7 @@ class NodeTypeDatasetKalman(data.Dataset):
             node = scene.get_node_by_id(node.id)
 
         sample = get_node_timestep_data(self.env, scene, t, node, self.state, self.pred_state,
-                                        self.edge_types, self.max_ht, self.max_ft, self.hyperparams) + (0, self.kalman_classes[i],)
+                                        self.edge_types, self.max_ht, self.max_ft, self.hyperparams) + (self.kalman_classes[i],)
         # scene = scene.augment()
         # node = scene.get_node_by_id(node.id)
         # sample_aug = get_node_timestep_data(self.env, scene, t, node, self.state, self.pred_state,

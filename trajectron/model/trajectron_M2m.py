@@ -56,6 +56,27 @@ class Trajectron(object):
         for node_str, model in self.node_models_dict.items():
             model.set_curr_iter(curr_iter)
 
+    def preprocess_edges(self, batch, node_type):
+        mode = ModeKeys.TRAIN
+        (first_history_index,
+         x_t, y_t, x_st_t, y_st_t,
+         neighbors_data_st,
+         neighbors_edge_value,
+         robot_traj_st_t,
+         map) = batch
+        model = self.node_models_dict[node_type]
+        if self.hyperparams['edge_encoding']:
+            preprocessed_edges = {}
+            for edge_type in model.edge_types:
+                # Encode edges for given edge type
+                joint_history, combined_edge_masks = model.preprocess_edge(x_st_t.to(self.device),
+                                                                           edge_type,
+                                                                           restore(neighbors_data_st)[
+                                                                               edge_type],
+                                                                           restore(neighbors_edge_value)[edge_type])
+                preprocessed_edges[edge_type] = [joint_history, combined_edge_masks]
+        return (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
+
     def encoded_x(self, batch, node_type):
         """
         Returns:
@@ -67,12 +88,7 @@ class Trajectron(object):
             - n_s_t0: Standardized current state of the node.
         """""
         mode = ModeKeys.TRAIN
-        (first_history_index,
-         x_t, y_t, x_st_t, y_st_t,
-         neighbors_data_st,
-         neighbors_edge_value,
-         robot_traj_st_t,
-         map) = batch
+        (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map) = batch
         x = x_t.to(self.device)
         y = y_t.to(self.device)
         x_st_t = x_st_t.to(self.device)
@@ -82,16 +98,18 @@ class Trajectron(object):
         if type(map) == torch.Tensor:
             map = map.to(self.device)
         model = self.node_models_dict[node_type]
-        x, n_s_t0, x_nr_t = model.obtain_encoded_tensors(mode=mode,
-                                                         inputs=x,
-                                                         inputs_st=x_st_t,
-                                                         labels=y,
-                                                         labels_st=y_st_t,
-                                                         first_history_indices=first_history_index,
-                                                         neighbors=restore(neighbors_data_st),
-                                                         neighbors_edge_value=restore(neighbors_edge_value),
-                                                         robot=robot_traj_st_t,
-                                                         map=map)
+        import pdb; pdb.set_trace()
+        x, n_s_t0, x_nr_t = model.obtain_encoded_tensors_(mode=mode,
+                                                          inputs=x,
+                                                          inputs_st=x_st_t,
+                                                          labels=y,
+                                                          labels_st=y_st_t,
+                                                          first_history_indices=first_history_index,
+                                                          #   neighbors=restore(neighbors_data_st),
+                                                          #   neighbors_edge_value=restore(neighbors_edge_value),
+                                                          preprocessed_edges=preprocessed_edges,
+                                                          robot=robot_traj_st_t,
+                                                          map=map)
         return (x, n_s_t0, x_nr_t)
 
     def predict_kalman_class(self, x, n_s_t0, x_nr_t, node_type, normalize_weights=True):

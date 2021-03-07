@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 import tqdm
-from torch import Size, nn
+from torch import Size, nn, tensor
 from tqdm import tqdm
 
 # warnings.filterwarnings("ignore", category=UserWarning)
@@ -42,15 +42,16 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
             optimizer[node_type].zero_grad()
-            inputs = batch[:-2]
-            # weights = batch[-2].to(device)
+            inputs = batch[:-1]
             targets = batch[-1]
             targets = targets.to(device)
             # inputs_shape =[x[i].shape for i in range(5)]
+            inputs = trajectron.preprocess_edges(inputs, node_type)
             y_hat, features = trajectron.predict(inputs, node_type)
             train_loss = criterion(y_hat, targets)
             # import pdb; pdb.set_trace()
-            pbar.set_description(f"Epoch {epoch}, {node_type} L: {train_loss.mean().log10().item():.2f}")
+            pbar.set_description(
+                f"Epoch {epoch}, {node_type} L: {train_loss.mean().item():.2f} (log10: {train_loss.mean().log10().item():.2f})")
             train_loss.mean().backward()
             # Clipping gradients.
             if hyperparams['grad_clip'] is not None:
@@ -80,15 +81,20 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
         loss = torch.cat(loss_epoch)
         assert class_count_sampled == hyperparams['class_count_dic'], "You didn't go through all data"
         log_writer.add_scalar(f"{node_type}/classification_g/train/loss", loss.mean().log10().item(), epoch)
+        log_writer.add_scalar(f"{node_type}/classification_g/train/loss_logarithmic", loss.mean().item(), epoch)
         log_writer.add_scalar(f"{node_type}/classification_g/train/accuracy",
                               correct_epoch / data_loader.dataset.len, epoch)
 
         ret_class_acc = {k: class_correct[k] / hyperparams['class_count_dic'][k]
                          for k in hyperparams['class_count_dic'].keys()}
-        ret_class_loss = {k: torch.cat(class_loss[k]).mean().log10().item()
+        ret_class_loss_log = {k: torch.cat(class_loss[k]).mean().log10().item()
+                              for k in hyperparams['class_count_dic'].keys()}
+        ret_class_loss = {k: torch.cat(class_loss[k]).mean().item()
                           for k in hyperparams['class_count_dic'].keys()}
         for k in hyperparams['class_count_dic'].keys():
             log_writer.add_scalar(f"{node_type}/classification_g/train/loss_class_{k}", ret_class_loss[k], epoch)
+            log_writer.add_scalar(f"{node_type}/classification_g/train/loss_logarithmic_{k}",
+                                  ret_class_loss_log[k], epoch)
             log_writer.add_scalar(f"{node_type}/classification_g/train/accuracy_class_{k}", ret_class_acc[k], epoch)
 
         print("Epoch Loss: " + bcolors.OKGREEN + str(round(loss.mean().log10().item(), 3)) + bcolors.ENDC)
@@ -115,11 +121,10 @@ def train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, cr
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
             optimizer[node_type].zero_grad()
-            inputs = batch[:-2]
-            # weights = batch[-2].to(device)
+            inputs = batch[:-1]
             targets = batch[-1]
             targets = targets.to(device)
-            # inputs_shape =[x[i].shape for i in range(5)]
+            inputs = trajectron.preprocess_edges(inputs, node_type)
             _, features = trajectron.predict(inputs, node_type)
             train_loss, mask_pos, mask_neg = criterion(features, targets)
             pbar.set_description(
@@ -196,15 +201,22 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
     trajectron_g.model_registrar.eval()
     trajectron.model_registrar.eval()
     criterion = nn.CrossEntropyLoss()
+    (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map) = seed_inputs
+    # We will use x_st_t and preprocessed_edges
     # Random Noise
-    inputs_ = list()
     if random_start:
-        for input in seed_inputs:
-            if input is not None:
-                random_noise = random_perturb(input, 'l2', 0.5)
-                inputs_.append(torch.clamp(input + random_noise, 0, 1))
-            else:
-                inputs_.append(None)
+        # add random noise to node states
+        random_noise = random_perturb(x_st_t, 'l2', 0.5)
+        import pdb; pdb.set_trace()
+        x_st_t = torch.clamp(x_st_t + random_noise, 0, 1)
+        # add random noise to edge data
+        for key in preprocessed_edges.keys():
+            random_noise = random_perturb(preprocessed_edges[key][0], 'l2', 0.5)
+            import pdb; pdb.set_trace()
+            preprocessed_edges[key][0] = torch.clamp(preprocessed_edges[key][0] + random_noise, 0, 1)
+            random_noise = random_perturb(preprocessed_edges[key][1], 'l2', 0.5)
+            import pdb; pdb.set_trace()
+            preprocessed_edges[key][1] = torch.clamp(preprocessed_edges[key][1] + random_noise, 0, 1)
     else:
         inputs_ = seed_inputs
     # Verify the shapes
@@ -252,6 +264,37 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
     trajectron.model_registrar.train()
     return inputs_, correct, meta_count
 
+    # find a way to make this adaptable
+    ret = []
+    for e in input:
+        if isinstance(e, torch.Tensor):
+            ret.append(e.clone())
+        elif isinstance(e, dict) and isinstance(list(e.values())[0], list):
+            dic = {}
+            for k, v in e.items():
+                assert all(isinstance(elem, torch.Tensor) for elem in v)
+                dic[k] = [tensor.clone() for tensor in v]
+            ret.append(dic)
+        else:
+            ret.append(None)
+    return ret
+
+
+def select_from_batch_input(input, select_idx):
+    ret = []
+    for e in input:
+        if isinstance(e, torch.Tensor):
+            ret.append(e[select_idx])
+        elif isinstance(e, dict) and isinstance(list(e.values())[0], list):
+            dic = {}
+            for k, v in e.items():
+                assert all(isinstance(elem, torch.Tensor) for elem in v)
+                dic[k] = [tensor[select_idx] for tensor in v]
+            ret.append(dic)
+        else:
+            ret.append(None)
+    return ret
+
 
 def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs_orig_tuple,
               targets_orig, gen_idx, gen_targets, hyperparams, device):
@@ -262,7 +305,9 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     batch_size = inputs_orig_tuple[0].size(0)
     ########################
     # inputs = inputs_orig_tuple.clone()
-    inputs_tuple_ = tuple(tensor.clone() if tensor is not None else None for tensor in inputs_orig_tuple)
+
+    inputs_tuple = clone_batch_input(inputs_orig_tuple)
+
     targets = targets_orig.clone()
     ########################
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(device)
@@ -284,7 +329,7 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     # The selected columns are going to be used as seed i.e. x0, k0 in the current batch
     seed_targets = targets_orig[select_idx]
     # seed_inputs = inputs_orig_tuple[select_idx]
-    seed_inputs = tuple(tensor[select_idx] if tensor is not None else None for tensor in inputs_tuple_)
+    seed_inputs = select_from_batch_input(inputs_tuple, select_idx)
     # ! Now we have sampled seed classes k0 of initial point x0 given gen_target class k.
     gen_inputs, correct_mask, m_count = generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets,
                                                    p_accept, hyperparams['gamma'], hyperparams['lam'], hyperparams['step_size'], True, hyperparams['attack_iter'])
@@ -296,7 +341,7 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     others_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
     others_mask[gen_c_idx] = 0
     others_idx = others_mask.nonzero().view(-1)
-    x, n_s_t0, x_nr_t = inputs_tuple_
+    x, n_s_t0, x_nr_t = inputs_tuple
     if num_gen > 0:
         gen_inputs_c = tuple(
             tensor[correct_mask] if tensor is not None else None for tensor in gen_inputs)
@@ -398,12 +443,11 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
         class_acc = {k: [] for k in hyperparams['class_count_dic'].keys()}
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
-            x = batch[:-2]
-            # weights = batch[-2].to(device)
+            inputs = batch[:-1]
             targets = batch[-1]
             targets = targets.to(device)
-            e_x = trajectron.encoded_x(x, node_type)
-            e_x = tuple(tensor.detach() if tensor is not None else None for tensor in e_x)
+            inputs = trajectron.preprocess_edges(inputs, node_type)
+            import pdb; pdb.set_trace()
             # Set a generation target for current batch with re-sampling
             # Keep the sample with this probability
             gen_probs = N_SAMPLES_PER_CLASS_T[targets] / N_SAMPLES_PER_CLASS_T[0]
@@ -412,7 +456,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             gen_index = gen_index.view(-1)
             gen_targets = targets[gen_index]
             t_loss, g_loss, num_others, num_correct, num_gen, num_gen_correct, p_g_orig_batch, p_g_targ_batch, success, final_targets, m_count, class_gen_batch, class_loss_batch, class_acc_batch = train_net(
-                trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, e_x, targets, gen_index, gen_targets, hyperparams, device)
+                trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs, targets, gen_index, gen_targets, hyperparams, device)
             # Count for the modified batch
             pbar.set_description(
                 f"Epoch {epoch}, {node_type} #gen_correct: {int(num_gen_correct)} #m_count: {m_count} ")
