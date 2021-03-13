@@ -16,11 +16,12 @@ from tensorboardX import SummaryWriter
 from torch import log, nn, optim, utils
 from torch.utils.data.sampler import Sampler
 from tqdm import tqdm
+from shutil import copyfile
 
 import evaluation
 import visualization
 from argument_parser import args
-from m2m_toolbox import FocalLoss, bcolors, train_epoch, train_gen_epoch, train_epoch_con, LDAMLoss, SupervisedConLoss
+from m2m_toolbox import FocalLoss, bcolors, generation, train_epoch, train_gen_epoch, train_epoch_con, LDAMLoss, SupervisedConLoss
 from model.dataset import EnvironmentDataset, EnvironmentDatasetKalman, collate
 from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
@@ -110,10 +111,21 @@ if __name__ == '__main__':
     else:
         model_tag = "_".join(["model_classification", datetime.now().strftime("%d_%m_%Y-%H_%M"), args.log_tag])
     # model_tag = "model_classification_22_02_2021-12_27_cosann_10_2_ce_2_conloss_eth_ar3"
-    if not args.debug:
+    if args.gen:
+        # if we are generating (create subfolder for f)
+        model_dir_f = os.path.join(args.log_dir, args.experiment, model_tag, model_tag + '_f')
+        pathlib.Path(model_dir_f).mkdir(parents=True, exist_ok=True)
+        model_dir_g = os.path.join(args.log_dir, args.experiment, model_tag)
+        checkpoint_name = 'model_registrar-%d-%s.pt' % (args.net_g_ts, args.net_g_extra_tag)
+        copyfile(os.path.join(model_dir_g, checkpoint_name), os.path.join(model_dir_f, checkpoint_name))
+
+    if not args.debug: 
         # Create the log and model directiory if they're not present.
-        model_dir = os.path.join(args.log_dir, args.experiment, model_tag)
-        pathlib.Path(model_dir).mkdir(parents=True, exist_ok=True)
+        if not args.gen:
+            model_dir = os.path.join(args.log_dir, args.experiment, model_tag)
+            pathlib.Path(model_dir).mkdir(parents=True, exist_ok=True)
+        else:
+            model_dir = model_dir_f
         # Save config to model directory
         with open(os.path.join(model_dir, 'config.json'), 'w') as conf_json:
             json.dump(hyperparams, conf_json)
@@ -156,7 +168,7 @@ if __name__ == '__main__':
     hyperparams['class_weights'] = train_dataset.class_weights[0]
     hyperparams['num_classes'] = len(hyperparams['class_count_dic'])
     # TODO Read these values from command line args
-    hyperparams['beta'] = 0.9  # (0.9, 0.99, 0.999) Lower -> bigger p accept
+    hyperparams['beta'] = 0.999  # (0.9, 0.99, 0.999) Lower -> bigger p accept
     # lower acceptance bound on logit for g: L(g;x*,k)
     hyperparams['gamma'] = 0.8  # (0.9, 0.99) Lower -> bigger p accept
     hyperparams['lam'] = 0.1  # (0.01, 0.1, 0.5) Lower -> bigger p accept
@@ -304,7 +316,7 @@ if __name__ == '__main__':
             lr_scheduler[node_type] = optim.lr_scheduler.CosineAnnealingWarmRestarts(
                 optimizer[node_type], T_0=10, T_mult=2)
         # initial_lr_state[node_type] = lr_scheduler[node_type].state_dict()
-
+    save_gen_dir = os.path.join(model_dir, "generation")
     # Classification criterion
     # https://arxiv.org/pdf/1901.05555.pdf
     weight = hyperparams['class_weights'].to(args.device)
@@ -337,17 +349,17 @@ if __name__ == '__main__':
             print("**** Train Epoch with generation ****")
             # Generation process and training with generated data
             train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
-                                                                            train_data_loader, hyperparams, log_writer, args.device)
+                                                                            train_data_loader, hyperparams, log_writer, save_gen_dir, args.device)
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
             print("**** Train Epoch without generation ****")
+            # print(trajectron.model_registrar.get_name_match("PEDESTRIAN/decoder/initial_mu")._modules["0"].weight)
             # if epoch <= 150:
             #     epoch_loss = train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
             #                                  train_data_loader, epoch, hyperparams, log_writer, args.device)
             # else:
             class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
                                                 train_data_loader, epoch, hyperparams, log_writer, args.device)
-
         if not args.gen and epoch >= 100:
             criterion_1 = nn.CrossEntropyLoss(reduction='none', weight=weight)
 

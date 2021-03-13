@@ -5,6 +5,13 @@ import numpy as np
 import seaborn as sns
 
 
+def plot_history(parameter_list):
+    """
+    docstring
+    """
+    pass
+
+
 def plot_trajectories(ax,
                       prediction_dict,
                       histories_dict,

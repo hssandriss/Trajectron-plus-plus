@@ -77,7 +77,7 @@ class Trajectron(object):
                 preprocessed_edges[edge_type] = [joint_history, combined_edge_masks]
         return (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
 
-    def encoded_x(self, batch, node_type):
+    def encoded_x(self, batch, node_type, mode):
         """
         Returns:
             - x: Encoded input / condition tensor to the CVAE x_e.
@@ -87,7 +87,7 @@ class Trajectron(object):
             - y: Label / future of the node. (Ground truth)
             - n_s_t0: Standardized current state of the node.
         """""
-        mode = ModeKeys.TRAIN
+        
         (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map) = batch
         x = x_t.to(self.device)
         y = y_t.to(self.device)
@@ -98,7 +98,7 @@ class Trajectron(object):
         if type(map) == torch.Tensor:
             map = map.to(self.device)
         model = self.node_models_dict[node_type]
-        import pdb; pdb.set_trace()
+
         x, n_s_t0, x_nr_t = model.obtain_encoded_tensors_(mode=mode,
                                                           inputs=x,
                                                           inputs_st=x_st_t,
@@ -122,8 +122,8 @@ class Trajectron(object):
         logits, features = model.predict_kalman_class(x, n_s_t0, x_nr_t)
         return logits, features
 
-    def predict(self, batch, node_type):
-        x, n_s_t0, x_nr_t = self.encoded_x(batch, node_type)
+    def predict(self, batch, node_type, mode):
+        x, n_s_t0, x_nr_t = self.encoded_x(batch, node_type, mode)
         assert x.is_leaf == False, "You are not backpropagating on the encoder"
         logits, features = self.predict_kalman_class(x, n_s_t0, x_nr_t, node_type, normalize_weights=False)
         return logits, features

@@ -2,10 +2,13 @@ import warnings
 import torch.nn as nn
 import numpy as np
 import torch
+import os
+import dill
 import torch.nn.functional as F
 import tqdm
-from torch import Size, nn, tensor
+from torch import Size, mode, nn, tensor
 from tqdm import tqdm
+from model.model_utils import ModeKeys
 
 # warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -46,8 +49,11 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
             targets = batch[-1]
             targets = targets.to(device)
             # inputs_shape =[x[i].shape for i in range(5)]
+            # some inputs have nan values in x_st_t (inputs[3]) torch.isnan(inputs[3]).sum(2).sum(1).nonzero()
             inputs = trajectron.preprocess_edges(inputs, node_type)
-            y_hat, features = trajectron.predict(inputs, node_type)
+            y_hat, features = trajectron.predict(inputs, node_type, mode=ModeKeys.TRAIN)
+            if torch.isnan(y_hat).nonzero().sum() > 0:
+                import pdb; pdb.set_trace()
             train_loss = criterion(y_hat, targets)
             # import pdb; pdb.set_trace()
             pbar.set_description(
@@ -125,7 +131,7 @@ def train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, cr
             targets = batch[-1]
             targets = targets.to(device)
             inputs = trajectron.preprocess_edges(inputs, node_type)
-            _, features = trajectron.predict(inputs, node_type)
+            _, features = trajectron.predict(inputs, node_type, mode=ModeKeys.TRAIN)
             train_loss, mask_pos, mask_neg = criterion(features, targets)
             pbar.set_description(
                 f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f} Positives: {mask_pos.item():.2f}: Negatives: {mask_neg.item():.2f} ")
@@ -161,7 +167,7 @@ def classwise_loss(outputs, targets):
 
 def make_step(grad, attack, step_size):
     if attack == 'l2':
-        grad_norm = torch.norm(grad.view(grad.shape[0], -1), dim=1).view(-1, 1)
+        grad_norm = torch.norm(grad.view(grad.shape[0], -1), dim=1).view(-1, 1, 1)
         scaled_grad = grad / (grad_norm + 1e-10)
         step = step_size * scaled_grad
     elif attack == 'inf':
@@ -198,72 +204,130 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         correct: if the generated input is good enough to be from k* or should
                  we choose a random sample from k* (oversampling)
     """
-    trajectron_g.model_registrar.eval()
+    torch.backends.cudnn.enabled = False
     trajectron.model_registrar.eval()
+    trajectron_g.model_registrar.eval()
     criterion = nn.CrossEntropyLoss()
-    (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map) = seed_inputs
+    # How well does g perform initially on seed_inputs/targets ?
+    mask_reliable = filter_unreliable(trajectron_g, node_type, 0.8, seed_targets, seed_inputs)
     # We will use x_st_t and preprocessed_edges
+    (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map) = seed_inputs
     # Random Noise
     if random_start:
-        # add random noise to node states
+        # Add random noise to node states
+        # Verify the shapes of the noise
         random_noise = random_perturb(x_st_t, 'l2', 0.5)
-        import pdb; pdb.set_trace()
         x_st_t = torch.clamp(x_st_t + random_noise, 0, 1)
-        # add random noise to edge data
-        for key in preprocessed_edges.keys():
-            random_noise = random_perturb(preprocessed_edges[key][0], 'l2', 0.5)
-            import pdb; pdb.set_trace()
-            preprocessed_edges[key][0] = torch.clamp(preprocessed_edges[key][0] + random_noise, 0, 1)
-            random_noise = random_perturb(preprocessed_edges[key][1], 'l2', 0.5)
-            import pdb; pdb.set_trace()
-            preprocessed_edges[key][1] = torch.clamp(preprocessed_edges[key][1] + random_noise, 0, 1)
-    else:
-        inputs_ = seed_inputs
-    # Verify the shapes
-    assert len(inputs_[0].shape) == 2
-    assert inputs_[0].shape[0] == seed_targets.shape[0]
-    assert inputs_[0].shape[1] == 64
-    # Loop for optimizing the objective
-    for _ in range(max_iter):
-        inputs_ = [tensor.clone().detach().requires_grad_(True) if tensor is not None else None
-                   for tensor in inputs_]
-        outputs_g, _ = trajectron_g.predict_kalman_class(*inputs_, node_type)
-        outputs_r, _ = trajectron.predict_kalman_class(*inputs_, node_type)
 
+    if not first_history_index.is_leaf or first_history_index.requires_grad:
+        (first_history_index, x_t, y_t, y_st_t, robot_traj_st_t, map) = tuple(tensor.detach().requires_grad_(False) if isinstance(tensor, torch.Tensor) else None
+                                                                              for tensor in (first_history_index, x_t, y_t, y_st_t, robot_traj_st_t, map))
+        for key in preprocessed_edges.keys():  # Edge data
+            preprocessed_edges[key][0] = preprocessed_edges[key][0].detach().requires_grad_(False)
+            preprocessed_edges[key][1] = preprocessed_edges[key][1].detach().requires_grad_(False)
+    initial_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
+    initial_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
+    # Loop for optimizing the objective
+    x_st_t_original = x_st_t.clone()
+    for _ in range(max_iter):
+        x_st_t = x_st_t.clone().detach().requires_grad_(True)
+        inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
+        outputs_g, _ = trajectron_g.predict(inputs, node_type, mode=ModeKeys.EVAL)
+        outputs_r, _ = trajectron.predict(inputs, node_type, mode=ModeKeys.EVAL)
         loss = criterion(outputs_g, gen_targets) + lam * classwise_loss(outputs_r, seed_targets)
         # Calculate grad with respect to each part of the input: x, n_s_t0, x_nr_t
-        if trajectron.hyperparams['incl_robot_node']:
-            x, n_s_t0, x_nr_t = inputs_
-            grad_x, grad_x_s_t0, grad_x_nr_t = torch.autograd.grad(loss, [x, n_s_t0, x_nr_t])
-            x = x - make_step(grad_x, 'l2', step_size)
-            n_s_t0 = n_s_t0 - make_step(grad_x_s_t0, 'l2', step_size)
-            x_nr_t = x_nr_t - make_step(grad_x_nr_t, 'l2', step_size)
-            inputs_ = [torch.clamp(x, 0, 1), torch.clamp(n_s_t0, 0, 1), torch.clamp(x_nr_t, 0, 1)]
-        else:
-            x, n_s_t0, _ = inputs_
-            grad_x, grad_x_s_t0 = torch.autograd.grad(loss, [x, n_s_t0])
-            x = x - make_step(grad_x, 'l2', step_size)
-            n_s_t0 = n_s_t0 - make_step(grad_x_s_t0, 'l2', step_size)
-            inputs_ = [torch.clamp(x, 0, 1), torch.clamp(n_s_t0, 0, 1), None]
-    # inputs_ = inputs_.detach()
-    inputs_ = [tensor.detach() if tensor is not None else None for tensor in inputs_]
-    outputs_g, _ = trajectron_g.predict_kalman_class(*inputs_, node_type)
-    # seed_targets should be shifted to -> targets
-    # To check the current outputs targets:
-    predicted_classes = torch.argmax(F.softmax(outputs_g, 1), dim=1)
-    meta_count = (gen_targets == predicted_classes).sum().item()
-    # import pdb; pdb.set_trace()
-    # one_hot is the expected output if we generated the goal targets k
+        # Note that to flatten preprocessed_edges use: [*[*preprocessed_edges.values()][0], x_st_t]
+        grad_x_st_t = torch.autograd.grad(loss, [x_st_t])
+        x_st_t = x_st_t - make_step(grad_x_st_t[0], 'l2', step_size)
+        x_st_t = torch.clamp(x_st_t, 0, 1)
+    # Weights of the network remain unchanged
+    ##########################################
+    after_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
+    after_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
+    assert torch.all(initial_rnn_weights_g.eq(after_rnn_weights_g))
+    assert torch.all(initial_rnn_weights_f.eq(after_rnn_weights_f))
+    inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
+    inputs = detach_batch_input(inputs)
+    # Inputs now has the new values (verified)
+    outputs_g, _ = trajectron_g.predict(inputs, node_type, mode=ModeKeys.EVAL)
     one_hot = torch.zeros_like(outputs_g)
     one_hot.scatter_(1, gen_targets.view(-1, 1), 1)
-    # probs_g is the probabilites of k* in output_g
     probs_g = torch.softmax(outputs_g, dim=1)[one_hot.to(torch.bool)]
-    # correct is the condition that indicates if x* can be used as part of samples from k*
     correct = ((probs_g >= gamma) * torch.bernoulli(p_accept)).type(torch.bool).to(device)
+    correct = correct * mask_reliable
 
+    torch.backends.cudnn.enabled = True
     trajectron.model_registrar.train()
-    return inputs_, correct, meta_count
+    return inputs, correct
 
+
+def filter_unreliable(trajectron_g, node_type, threshold, seed_targets, seed_inputs):
+    outputs_g, _ = trajectron_g.predict(seed_inputs, node_type, mode=ModeKeys.EVAL)
+    one_hot = torch.zeros_like(outputs_g)
+    one_hot.scatter_(1, seed_targets.view(-1, 1), 1)
+    probs_g = torch.softmax(outputs_g, dim=1)[one_hot.to(torch.bool)]
+    mask_reliable = (probs_g >= threshold)
+    return mask_reliable
+
+
+def input_to_device(input, device):
+    """
+    TODO: Move batch input to device
+    """
+    ret = []
+    for e in input:
+        if isinstance(e, torch.Tensor):
+            ret.append(e.to(device))
+        elif isinstance(e, dict) and isinstance(list(e.values())[0], list):
+            dic = {}
+            for k, v in e.items():
+                assert all(isinstance(elem, torch.Tensor) for elem in v)
+                dic[k] = [tensor.to(device) for tensor in v]
+            ret.append(dic)
+        else:
+            ret.append(None)
+    return tuple(ret)
+
+
+def cat_inputs(input_list):
+    """
+    TODO: Concatenate inputs and targets
+    """
+    ret = []
+    sample_struct = input_list[0]
+    for i, e in enumerate(sample_struct):
+        if isinstance(e, torch.Tensor):
+            ret.append(torch.cat([input[i] for input in input_list], dim=0))
+        elif isinstance(e, dict) and isinstance(list(e.values())[0], list):
+            dic = {}
+            for k, v in e.items():
+                assert all(isinstance(elem, torch.Tensor) for elem in v)
+                dic[k][0] = torch.cat([input[i][k][0] for input in input_list], dim=0)
+                dic[k][1] = torch.cat([input[i][k][1] for input in input_list], dim=0)
+            ret.append(dic)
+        else:
+            ret.append(None)
+    return tuple(ret)
+
+
+def detach_batch_input(input):
+    # find a way to make this adaptable
+    ret = []
+    for e in input:
+        if isinstance(e, torch.Tensor):
+            ret.append(e.detach())
+        elif isinstance(e, dict) and isinstance(list(e.values())[0], list):
+            dic = {}
+            for k, v in e.items():
+                assert all(isinstance(elem, torch.Tensor) for elem in v)
+                dic[k] = [tensor.detach() for tensor in v]
+            ret.append(dic)
+        else:
+            ret.append(None)
+    return tuple(ret)
+
+
+def clone_batch_input(input):
     # find a way to make this adaptable
     ret = []
     for e in input:
@@ -280,19 +344,45 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
     return ret
 
 
+def replace_in_batch_input_by_index(input, new_input, indexes):
+    assert new_input[3].shape[0] == indexes.shape[0]
+    for i, _ in enumerate(input):
+        if isinstance(input[i], torch.Tensor):
+            input[i][indexes] = new_input[i]
+            input[i] = input[i].detach()
+            assert input[i].is_leaf
+        elif isinstance(input[i], dict):
+            for k in input[i].keys():
+                assert all(isinstance(elem, torch.Tensor) for elem in input[i][k])
+                assert all(isinstance(elem, torch.Tensor) for elem in new_input[i][k])
+                input[i][k][0][indexes] = new_input[i][k][0]
+                input[i][k][1][indexes] = new_input[i][k][1]
+                assert input[i][k][0].is_leaf and input[i][k][1].is_leaf
+    return input
+
+
 def select_from_batch_input(input, select_idx):
     ret = []
     for e in input:
         if isinstance(e, torch.Tensor):
-            ret.append(e[select_idx])
+            ret.append(e[select_idx].clone())
         elif isinstance(e, dict) and isinstance(list(e.values())[0], list):
             dic = {}
             for k, v in e.items():
                 assert all(isinstance(elem, torch.Tensor) for elem in v)
-                dic[k] = [tensor[select_idx] for tensor in v]
+                dic[k] = [tensor[select_idx].clone() for tensor in v]
             ret.append(dic)
         else:
             ret.append(None)
+    return ret
+
+
+def edge_dic_eq(dic_1, dic_2):
+    ret = True
+    assert dic_1.keys() == dic_2.keys()
+    for k in dic_1[i].keys():
+        ret = ret and torch.all(dic_1[k][0].eq(dic_2[k][0]))
+        ret = ret and torch.all(dic_1[k][1].eq(dic_2[k][1]))
     return ret
 
 
@@ -331,8 +421,8 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     # seed_inputs = inputs_orig_tuple[select_idx]
     seed_inputs = select_from_batch_input(inputs_tuple, select_idx)
     # ! Now we have sampled seed classes k0 of initial point x0 given gen_target class k.
-    gen_inputs, correct_mask, m_count = generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets,
-                                                   p_accept, hyperparams['gamma'], hyperparams['lam'], hyperparams['step_size'], True, hyperparams['attack_iter'])
+    gen_inputs, correct_mask = generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets,
+                                          p_accept, hyperparams['gamma'], hyperparams['lam'], hyperparams['step_size'], True, hyperparams['attack_iter'])
     #######################
     # Only change the correctly generated samples
     num_gen = sum_tensor(correct_mask)
@@ -341,36 +431,31 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     others_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
     others_mask[gen_c_idx] = 0
     others_idx = others_mask.nonzero().view(-1)
-    x, n_s_t0, x_nr_t = inputs_tuple
+    # (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map) = inputs_tuple
     if num_gen > 0:
-        gen_inputs_c = tuple(
-            tensor[correct_mask] if tensor is not None else None for tensor in gen_inputs)
-        gen_x_c, gen_n_s_t0_c, gen_x_nr_t_c = gen_inputs_c
+        gen_inputs_c = select_from_batch_input(gen_inputs, correct_mask)   # seems correct
+        new_inputs = replace_in_batch_input_by_index(inputs_tuple, gen_inputs_c, gen_c_idx)
+        new_targets = targets.clone()
         gen_targets_c = gen_targets[correct_mask]
-
-        targets[gen_c_idx] = gen_targets_c
-        x[gen_c_idx] = gen_x_c
-        n_s_t0[gen_c_idx] = gen_n_s_t0_c
-        if trajectron.hyperparams['incl_robot_node']:
-            x_nr_t[gen_c_idx] = gen_x_nr_t_c
-        x_orig, n_s_t0_orig, _ = inputs_orig_tuple
-        assert (targets != targets_orig).sum() == 0
-        assert (x != x_orig).sum() > 0 or (n_s_t0 != n_s_t0_orig).sum() > 0
-
-    # ! Bare in mind that here we do not replace the seed targets
-    # ! but create new variants of gen_targets[correct_mask]
+        new_targets[gen_c_idx] = gen_targets_c
+        inputs_tuple = new_inputs
+    # Verify
+    # if num_gen > 0:
+    #     import pdb; pdb.set_trace()
+    #     y_hat_verif, _ = trajectron_g.predict(inputs_tuple, node_type, mode=ModeKeys.EVAL)
+    #     y_gen_verif, _ = trajectron_g.predict(gen_inputs_c, node_type, mode=ModeKeys.EVAL)
+    #     print(y_hat_verif[gen_c_idx] == y_gen_verif)
+    # inputs_tuple = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
+    # ! Bare in mind that here we do not replace the seed targets but create new variants of gen_targets[correct_mask]
     # Normal training for a minibatch
     optimizer[node_type].zero_grad()
-    y_hat, features = trajectron.predict_kalman_class(x, n_s_t0, x_nr_t, node_type)
+    y_hat, _ = trajectron.predict(inputs_tuple, node_type, mode=ModeKeys.TRAIN)
     train_loss = criterion(y_hat, targets)
     train_loss.mean().backward()
     # Clipping gradients.
     if hyperparams['grad_clip'] is not None:
         nn.utils.clip_grad_value_(trajectron.model_registrar.parameters(), hyperparams['grad_clip'])
     optimizer[node_type].step()
-    # Stepping forward the learning rate scheduler and annealers.
-    lr_scheduler[node_type].step()
-
     ################################
     # Summing up the class based gens, loss, acc for current batch
     predicted = torch.argmax(F.softmax(y_hat, 1), 1)
@@ -417,15 +502,25 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
             success[i, 0] = sum_tensor(gen_targets_c == i)
         success[i, 1] = sum_tensor(gen_targets == i)
 
-    return oth_loss_total, gen_loss_total, num_others, num_correct_oth, num_gen, num_correct_gen, p_g_orig, p_g_targ, success, targets, m_count, class_gen_batch, class_loss_batch, class_acc_batch
+    batch_gen_inputs = None
+    batch_gen_outputs = None
+    batch_orig_inputs = None
+    batch_orig_outputs = None
+    if num_gen > 0:
+        batch_orig_inputs = select_from_batch_input(seed_inputs, correct_mask)
+        batch_orig_outputs = seed_targets[correct_mask]
+        batch_gen_inputs = gen_inputs_c
+        batch_gen_outputs = gen_targets_c
+    return oth_loss_total, gen_loss_total, num_others, num_correct_oth, num_gen, num_correct_gen, p_g_orig, p_g_targ, \
+        success, class_gen_batch, class_loss_batch, class_acc_batch, batch_gen_inputs, batch_gen_outputs, batch_orig_inputs, batch_orig_outputs
 
 
 def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion,
-                    train_data_loader, hyperparams, log_writer, device):
+                    train_data_loader, hyperparams, log_writer, save_gen_dir, device):
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(device)
-    trajectron.model_registrar.train()
     trajectron_g.model_registrar.eval()
+    trajectron.model_registrar.train()
 
     results = dict()
 
@@ -441,13 +536,16 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
         class_gen = {k: [] for k in hyperparams['class_count_dic'].keys()}
         class_loss = {k: [] for k in hyperparams['class_count_dic'].keys()}
         class_acc = {k: [] for k in hyperparams['class_count_dic'].keys()}
+        gen_ins = []
+        gen_outs = []
+        orig_ins = []
+        orig_outs = []
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
             inputs = batch[:-1]
             targets = batch[-1]
             targets = targets.to(device)
             inputs = trajectron.preprocess_edges(inputs, node_type)
-            import pdb; pdb.set_trace()
             # Set a generation target for current batch with re-sampling
             # Keep the sample with this probability
             gen_probs = N_SAMPLES_PER_CLASS_T[targets] / N_SAMPLES_PER_CLASS_T[0]
@@ -455,11 +553,17 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             gen_index = (1 - torch.bernoulli(gen_probs)).nonzero()
             gen_index = gen_index.view(-1)
             gen_targets = targets[gen_index]
-            t_loss, g_loss, num_others, num_correct, num_gen, num_gen_correct, p_g_orig_batch, p_g_targ_batch, success, final_targets, m_count, class_gen_batch, class_loss_batch, class_acc_batch = train_net(
+            t_loss, g_loss, num_others, num_correct, num_gen, num_gen_correct, p_g_orig_batch, p_g_targ_batch, success, class_gen_batch, class_loss_batch, class_acc_batch, gen_in, gen_out, orig_in, orig_out = train_net(
                 trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs, targets, gen_index, gen_targets, hyperparams, device)
             # Count for the modified batch
             pbar.set_description(
-                f"Epoch {epoch}, {node_type} #gen_correct: {int(num_gen_correct)} #m_count: {m_count} ")
+                f"Epoch {epoch}, {node_type} # Generated: {int(num_gen)} Samples")
+            if gen_in is not None:
+                # to CPU in order to save memory
+                gen_ins.append(input_to_device(gen_in, 'cpu'))
+                gen_outs.append(gen_out.to('cpu'))
+                orig_ins.append(input_to_device(orig_in, 'cpu'))
+                orig_outs.append(orig_out.to('cpu'))
             for k in hyperparams['class_count_dic'].keys():
                 class_gen[k].append(class_gen_batch[k])
                 class_loss[k].append(class_loss_batch[k])
@@ -474,7 +578,37 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             p_g_targ += p_g_targ_batch  # logits confidence on the target label
             t_success += success
             curr_iter += 1
-
+        # Stepping forward the learning rate scheduler and annealers.
+        lr_scheduler[node_type].step()
+        # Saving generated data
+        if num_gen > 0:
+            # Concatenate inputs
+            gen_o = torch.cat(gen_outs, dim=0)
+            gen_i = cat_inputs(gen_ins)
+            orig_o = torch.cat(orig_outs, dim=0)
+            orig_i = cat_inputs(orig_ins)
+            import pdb; pdb.set_trace()
+            assert gen_o.shape[0] == gen_i[0].shape[0]
+            assert orig_o.shape[0] == orig_i[0].shape[0]
+            import pdb; pdb.set_trace()
+            file = {
+                "original":
+                {
+                    "inputs": orig_i,
+                    "outputs": orig_o
+                },
+                "generated":
+                {
+                    "inputs": gen_i,
+                    "outputs": gen_o
+                },
+            }
+            import pdb; pdb.set_trace()
+            # Saving to dill pkl file
+            print("Saving generated data...")
+            file_path = os.path.join(save_gen_dir, f"data_orig_gen_{epoch}.pkl")
+            with open(file_path, "wb") as dill_file:
+                dill.dump(file, dill_file)
         results[node_type] = {
             'train_loss': oth_loss / total_oth,
             'gen_loss': gen_loss / total_gen,
@@ -484,13 +618,14 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             'p_g_targ': p_g_targ / total_gen,
             't_success': t_success
         }
+        # import pdb; pdb.set_trace()
         log_writer.add_scalar(f"{node_type}/classification_f/train/train_loss", oth_loss / total_oth, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/gen_loss", gen_loss / total_gen, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/train_acc", 100. * correct_oth / total_oth, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/gen_acc", 100. * correct_gen / total_gen, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/p_g_orig", p_g_orig / total_gen, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/p_g_targ", p_g_targ / total_gen, epoch)
-        log_writer.add_scalar(f"{node_type}/classification_f/train/t_success", t_success, epoch)
+        # log_writer.add_scalar(f"{node_type}/classification_f/train/t_success", t_success, epoch)
 
         msg = '%s | t_Loss: %.3f | g_Loss: %.3f | Acc: %.3f%% (%d/%d) | Acc_gen: %.3f%% (%d/%d) ' \
             '| Prob_orig: %.3f | Prob_targ: %.3f' % (str(node_type),

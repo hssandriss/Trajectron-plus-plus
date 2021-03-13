@@ -424,6 +424,7 @@ class MultiHypothesisNet(object):
             - y: Label / future of the node. (Ground truth)
             - n_s_t0: Standardized current state of the node.
         """
+
         x, x_r_t, y_e, y_r, y = None, None, None, None, None
         initial_dynamics = dict()
 
