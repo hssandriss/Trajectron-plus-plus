@@ -70,9 +70,9 @@ class NodeTypeDatasetKalman(data.Dataset):
         self.edge_types = [edge_type for edge_type in env.get_edge_types() if edge_type[0] is node_type]
         self.num_classes = predifined_num_classes
         self.load_scores()
-        self.rebalance_bins_binary()
+        # self.rebalance_bins_binary()
         # self.rebalance_bins_multi(stack_right=stack_right)
-        # self.rebalance_3_bins()
+        self.rebalance_3_bins()
 
     def index_env(self, node_freq_mult, scene_freq_mult, **kwargs):
         index = list()
@@ -340,7 +340,7 @@ class NodeTypeDatasetKalman(data.Dataset):
             node = scene.get_node_by_id(node.id)
 
         sample = get_node_timestep_data(self.env, scene, t, node, self.state, self.pred_state,
-                                        self.edge_types, self.max_ht, self.max_ft, self.hyperparams) + (self.kalman_classes[i],)
+                                        self.edge_types, self.max_ht, self.max_ft, self.hyperparams) + (self.kalman_classes[i], self.scores[i])
         # scene = scene.augment()
         # node = scene.get_node_by_id(node.id)
         # sample_aug = get_node_timestep_data(self.env, scene, t, node, self.state, self.pred_state,

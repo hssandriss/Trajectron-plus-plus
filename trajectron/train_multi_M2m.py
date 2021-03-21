@@ -21,7 +21,8 @@ from shutil import copyfile
 import evaluation
 import visualization
 from argument_parser import args
-from m2m_toolbox import FocalLoss, bcolors, generation, train_epoch, train_gen_epoch, train_epoch_con, LDAMLoss, SupervisedConLoss
+# from m2m_toolbox import FocalLoss, bcolors, generation, train_epoch, train_epoch_con_score_based, train_gen_epoch, train_epoch_con, train_epoch_con_score_based, LDAMLoss, SupervisedConLoss, ScoreBasedConLoss
+from m2m_toolbox import *
 from model.dataset import EnvironmentDataset, EnvironmentDatasetKalman, collate
 from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
@@ -105,7 +106,6 @@ if __name__ == '__main__':
 
     log_writer = None
     model_dir = None
-    # import pdb; pdb.set_trace()
     if args.model_tag:
         model_tag = args.model_tag
     else:
@@ -177,9 +177,7 @@ if __name__ == '__main__':
     hyperparams['non_linearity'] = 'relu'
     hyperparams['data_loader_sampler'] = 'random'
     hyperparams['learning_rate_style'] = 'cosannw'
-
     # hyperparams['learning_rate'] = 0.01  # Override lr
-    # import pdb; pdb.set_trace()
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(args.device)
 
@@ -316,23 +314,23 @@ if __name__ == '__main__':
             lr_scheduler[node_type] = optim.lr_scheduler.CosineAnnealingWarmRestarts(
                 optimizer[node_type], T_0=10, T_mult=2)
         # initial_lr_state[node_type] = lr_scheduler[node_type].state_dict()
-    save_gen_dir = os.path.join(model_dir, "generation")
+    if args.gen:
+        save_gen_dir = os.path.join(model_dir, "generation")
     # Classification criterion
     # https://arxiv.org/pdf/1901.05555.pdf
     weight = hyperparams['class_weights'].to(args.device)
-    criterion_1 = nn.CrossEntropyLoss(reduction='none')
+    criterion_2 = nn.CrossEntropyLoss(reduction='none')
+    criterion_1 = ScoreBasedConLoss()  # Use criterion_1._get_name() to get the name of the loss
     # criterion_1 = FocalLoss(weight=weight, gamma=0.5, reduction='none')
     # criterion = LDAMLoss(cls_num_list=hyperparams['class_count'], max_m=0.5, s=30, reduction='none').cuda()
     # criterion_2 = SupervisedConLoss(hyperparams['num_classes'])
     #################################
     #           TRAINING            #
     #################################
-    print()
-    print(bcolors.UNDERLINE + "Trained Model Extra_Tag:" + bcolors.ENDC)
+    print("\n" + bcolors.UNDERLINE + "Trained Model Extra_Tag:" + bcolors.ENDC)
     print(bcolors.OKGREEN + extra_tag + bcolors.ENDC)
     print(bcolors.UNDERLINE + "Class Count:" + bcolors.ENDC)
     print(bcolors.OKGREEN + str(hyperparams['class_count_dic']) + bcolors.ENDC)
-    print()
     curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
     # train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
     cls_generated, cls_accuracies, cls_losses, losses = [], [], [], []
@@ -348,49 +346,58 @@ if __name__ == '__main__':
         if epoch >= args.warm + 1 and args.gen:
             print("**** Train Epoch with generation ****")
             # Generation process and training with generated data
-            train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
-                                                                            train_data_loader, hyperparams, log_writer, save_gen_dir, args.device)
+            train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler,
+                                                                            criterion_2, train_data_loader, hyperparams, log_writer, save_gen_dir, args.device)
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
             print("**** Train Epoch without generation ****")
-            # print(trajectron.model_registrar.get_name_match("PEDESTRIAN/decoder/initial_mu")._modules["0"].weight)
-            # if epoch <= 150:
-            #     epoch_loss = train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
-            #                                  train_data_loader, epoch, hyperparams, log_writer, args.device)
-            # else:
-            class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
-                                                train_data_loader, epoch, hyperparams, log_writer, args.device)
-        if not args.gen and epoch >= 100:
-            criterion_1 = nn.CrossEntropyLoss(reduction='none', weight=weight)
-
-        #     # Use now weighted sampler
-        #     train_data_loader = dict()
-        #     for node_type_data_set in train_dataset:
-        #         node_type_dataloader = utils.data.DataLoader(node_type_data_set,
-        #                                                      collate_fn=collate,
-        #                                                      pin_memory=False if args.device is 'cpu' else True,
-        #                                                      batch_size=args.batch_size,
-        #                                                      #  sampler=node_type_data_set.weighted_sampler,
-        #                                                      shuffle=True,
-        #                                                      num_workers=args.preprocess_workers)
-        #         train_data_loader[node_type_data_set.node_type] = node_type_dataloader
-        #         # reset lr scheduler
-        #         lr_scheduler[node_type_data_set.node_type].load_state_dict(initial_lr_state[node_type])
-
+            if epoch <= 200:
+                epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
+                                                         criterion_1, train_data_loader, epoch, hyperparams, log_writer, args.device)
+            else:
+                class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
+                                                    criterion_2, train_data_loader, epoch, hyperparams, log_writer, args.device)
+        if epoch >= 250:
+            criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
+            # Use now weighted sampler
+            # train_data_loader = dict()
+            # for node_type_data_set in train_dataset:
+            #     node_type_dataloader = utils.data.DataLoader(node_type_data_set,
+            #                                                     collate_fn=collate,
+            #                                                     pin_memory=False if args.device is 'cpu' else True,
+            #                                                     batch_size=args.batch_size,
+            #                                                     #  sampler=node_type_data_set.weighted_sampler,
+            #                                                     shuffle=True,
+            #                                                     num_workers=args.preprocess_workers)
+            #     train_data_loader[node_type_data_set.node_type] = node_type_dataloader
+            #     # reset lr scheduler
+            #     lr_scheduler[node_type_data_set.node_type].load_state_dict(initial_lr_state[node_type])
         train_dataset.augment = False
-
         cls_accuracies.append({"epoch": epoch, "accuracy per class": class_acc})
         cls_losses.append({"epoch": epoch, "loss per class": class_loss})
         losses.append({"epoch": epoch, "loss": epoch_loss})
         if (args.save_every is not None and epoch % args.save_every == 0) or epoch == args.train_epochs:
             model_registrar.save_models(epoch, extra_tag)
-            with open(f'plots&runs/cls_accuracies_{extra_tag}.json', 'w') as fout:
+            with open(f'{model_dir}/cls_accuracies_{extra_tag}.json', 'w') as fout:
                 json.dump(cls_accuracies, fout)
-            with open(f'plots&runs/cls_losses_{extra_tag}.json', 'w') as fout:
+            with open(f'{model_dir}/cls_losses_{extra_tag}.json', 'w') as fout:
                 json.dump(cls_losses, fout)
-            with open(f'plots&runs/cls_generated_{extra_tag}.json', 'w') as fout:
+            with open(f'{model_dir}/cls_generated_{extra_tag}.json', 'w') as fout:
                 json.dump(cls_generated, fout)
-            with open(f'plots&runs/losses_{extra_tag}.json', 'w') as fout:
+            with open(f'{model_dir}/losses_{extra_tag}.json', 'w') as fout:
                 json.dump(losses, fout)
 
-    # train_loss_df.to_csv('./training_logs/train_loss_%s_%s.csv' % (args.log_tag, extra_tag), sep=";")
+
+
+
+
+
+
+
+
+
+
+
+
+
+

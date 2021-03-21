@@ -1,4 +1,5 @@
 import warnings
+from numpy.lib.polynomial import polysub
 import torch.nn as nn
 import numpy as np
 import torch
@@ -9,6 +10,9 @@ import tqdm
 from torch import Size, mode, nn, tensor
 from tqdm import tqdm
 from model.model_utils import ModeKeys
+import pathlib
+import matplotlib.pyplot as plt
+import matplotlib.patheffects as pe
 
 # warnings.filterwarnings("ignore", category=UserWarning)
 
@@ -45,17 +49,16 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
             optimizer[node_type].zero_grad()
-            inputs = batch[:-1]
-            targets = batch[-1]
+            inputs = batch[:-2]
+            targets = batch[-2]
             targets = targets.to(device)
             # inputs_shape =[x[i].shape for i in range(5)]
             # some inputs have nan values in x_st_t (inputs[3]) torch.isnan(inputs[3]).sum(2).sum(1).nonzero()
             inputs = trajectron.preprocess_edges(inputs, node_type)
             y_hat, features = trajectron.predict(inputs, node_type, mode=ModeKeys.TRAIN)
-            if torch.isnan(y_hat).nonzero().sum() > 0:
-                import pdb; pdb.set_trace()
+            # if torch.isnan(y_hat).nonzero().sum() > 0:
+            #     import pdb; pdb.set_trace()
             train_loss = criterion(y_hat, targets)
-            # import pdb; pdb.set_trace()
             pbar.set_description(
                 f"Epoch {epoch}, {node_type} L: {train_loss.mean().item():.2f} (log10: {train_loss.mean().log10().item():.2f})")
             train_loss.mean().backward()
@@ -113,7 +116,9 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
 
 def train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
                     train_data_loader, epoch, hyperparams, log_writer, device):
-
+    """
+    Training with contrastive loss (discriminate features using class label)
+    """
     trajectron.model_registrar.train()
 
     for node_type, data_loader in train_data_loader.items():
@@ -127,15 +132,62 @@ def train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, cr
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
             optimizer[node_type].zero_grad()
-            inputs = batch[:-1]
-            targets = batch[-1]
+            inputs = batch[:-2]
+            targets = batch[-2]
             targets = targets.to(device)
             inputs = trajectron.preprocess_edges(inputs, node_type)
             _, features = trajectron.predict(inputs, node_type, mode=ModeKeys.TRAIN)
             train_loss, mask_pos, mask_neg = criterion(features, targets)
             pbar.set_description(
                 f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f} Positives: {mask_pos.item():.2f}: Negatives: {mask_neg.item():.2f} ")
-            train_loss.register_hook(lambda grad: print(grad))
+            # train_loss.register_hook(lambda grad: print(grad))
+            train_loss.backward()
+            # Clipping gradients.
+            if hyperparams['grad_clip'] is not None:
+                nn.utils.clip_grad_value_(trajectron.model_registrar.parameters(), hyperparams['grad_clip'])
+            optimizer[node_type].step()
+            # Stepping forward the learning rate scheduler and annealers.
+            loss_epoch.append(train_loss.item())
+            neg_epoch.append(mask_neg.item())
+            pos_epoch.append(mask_pos.item())
+            curr_iter += 1
+        lr_scheduler[node_type].step()
+        curr_iter_node_type[node_type] = curr_iter
+        # Logging
+        log_writer.add_scalar(f"{node_type}/classification_g/train/conloss", np.mean(loss_epoch), epoch)
+        log_writer.add_scalar(f"{node_type}/classification_g/train/avg_positive_samples", np.mean(pos_epoch), epoch)
+        log_writer.add_scalar(f"{node_type}/classification_g/train/avg_negative_samples", np.mean(neg_epoch), epoch)
+        print("Epoch Loss: " + bcolors.OKGREEN + str(round(np.mean(loss_epoch), 3)) + bcolors.ENDC)
+    return np.mean(loss_epoch)
+
+
+def train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+                                train_data_loader, epoch, hyperparams, log_writer, device):
+    """
+    Training with contrastive loss (discriminate features using score value)
+    """
+    trajectron.model_registrar.train()
+
+    for node_type, data_loader in train_data_loader.items():
+        curr_iter = curr_iter_node_type[node_type]
+        loss_epoch = []
+        pos_epoch = []
+        neg_epoch = []
+        log_writer.add_scalar(f"{node_type}/classification_g/train/lr_scheduling",
+                              lr_scheduler[node_type].state_dict()['_last_lr'][0], epoch)
+        pbar = tqdm(data_loader, ncols=120)
+        for batch in pbar:
+            trajectron.set_curr_iter(curr_iter)
+            optimizer[node_type].zero_grad()
+            inputs = batch[:-2]
+            scores = batch[-1]
+            scores = scores.to(device)
+            inputs = trajectron.preprocess_edges(inputs, node_type)
+            _, features = trajectron.predict(inputs, node_type, mode=ModeKeys.TRAIN)
+            train_loss, mask_pos, mask_neg = criterion(features, scores)
+            pbar.set_description(
+                f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f} Positives: {mask_pos.item():.2f}: Negatives: {mask_neg.item():.2f} ")
+            # train_loss.register_hook(lambda grad: print(grad))
             train_loss.backward()
             # Clipping gradients.
             if hyperparams['grad_clip'] is not None:
@@ -270,6 +322,35 @@ def filter_unreliable(trajectron_g, node_type, threshold, seed_targets, seed_inp
     return mask_reliable
 
 
+def viz_orig_gen(input_orig,
+                 input_gen,
+                 log_writer,
+                 epoch,
+                 save_dir,
+                 line_alpha=0.7,
+                 line_width=0.2,
+                 edge_width=2,
+                 circle_edge_width=0.5,
+                 node_circle_size=0.3,
+                 batch_num=0,
+                 kde=False):
+    (_, _, _, x_st_t_orig, _, _, _, _) = input_orig
+    (_, _, _, x_st_t_gen, _, _, _, _) = input_gen
+    cmap = ['k', 'b', 'y', 'g', 'r']
+    x_st_t_orig = x_st_t_orig.squeeze(0)
+    x_st_t_gen = x_st_t_gen.squeeze(0)
+    fig, ax = plt.subplots(figsize=(3, 3))
+    ax.plot(x_st_t_orig[:, 0], x_st_t_orig[:, 1], 'k--')
+    ax.text(x_st_t_orig[0, 0], x_st_t_orig[0, 1], "initial", fontsize=7)
+    ax.text(x_st_t_orig[-1, 0], x_st_t_orig[-1, 1], "final", fontsize=7)
+    ax.plot(x_st_t_gen[:, 0], x_st_t_gen[:, 1], 'w--', path_effects=[pe.Stroke(linewidth=edge_width, foreground='k'), pe.Normal()])
+    ax.text(x_st_t_gen[0, 0], x_st_t_gen[0, 1], "initial", fontsize=7)
+    ax.text(x_st_t_gen[-1, 0], x_st_t_gen[-1, 1], "final", fontsize=7)
+    ax.axis('equal')
+    fig.savefig(f'example_gen_epoch{epoch}.png', dpi=300)
+    log_writer.add_figure('generation/trajectory_visualization', fig, epoch)
+
+
 def input_to_device(input, device):
     """
     TODO: Move batch input to device
@@ -302,8 +383,7 @@ def cat_inputs(input_list):
             dic = {}
             for k, v in e.items():
                 assert all(isinstance(elem, torch.Tensor) for elem in v)
-                dic[k][0] = torch.cat([input[i][k][0] for input in input_list], dim=0)
-                dic[k][1] = torch.cat([input[i][k][1] for input in input_list], dim=0)
+                dic[k] = [torch.cat([input[i][k][0] for input in input_list], dim=0), torch.cat([input[i][k][1] for input in input_list], dim=0)]
             ret.append(dic)
         else:
             ret.append(None)
@@ -377,13 +457,13 @@ def select_from_batch_input(input, select_idx):
     return ret
 
 
-def edge_dic_eq(dic_1, dic_2):
-    ret = True
-    assert dic_1.keys() == dic_2.keys()
-    for k in dic_1[i].keys():
-        ret = ret and torch.all(dic_1[k][0].eq(dic_2[k][0]))
-        ret = ret and torch.all(dic_1[k][1].eq(dic_2[k][1]))
-    return ret
+# def edge_dic_eq(dic_1, dic_2):
+#     ret = True
+#     assert dic_1.keys() == dic_2.keys()
+#     for k in dic_1.keys():
+#         ret = ret and torch.all(dic_1[k][0].eq(dic_2[k][0]))
+#         ret = ret and torch.all(dic_1[k][1].eq(dic_2[k][1]))
+#     return ret
 
 
 def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs_orig_tuple,
@@ -441,7 +521,6 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
         inputs_tuple = new_inputs
     # Verify
     # if num_gen > 0:
-    #     import pdb; pdb.set_trace()
     #     y_hat_verif, _ = trajectron_g.predict(inputs_tuple, node_type, mode=ModeKeys.EVAL)
     #     y_gen_verif, _ = trajectron_g.predict(gen_inputs_c, node_type, mode=ModeKeys.EVAL)
     #     print(y_hat_verif[gen_c_idx] == y_gen_verif)
@@ -458,6 +537,8 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     optimizer[node_type].step()
     ################################
     # Summing up the class based gens, loss, acc for current batch
+    ################################
+
     predicted = torch.argmax(F.softmax(y_hat, 1), 1)
     for k in hyperparams['class_count_dic'].keys():
         k_idx = (targets == k)
@@ -474,9 +555,10 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
             class_acc_batch[k] += k_acc
             if num_gen > 0:
                 class_gen_batch[k] += (gen_targets_c == k).sum().item()
-
     ################################
     # For logging the training
+    ################################
+
     oth_loss_total = sum_tensor(train_loss[others_idx])
     gen_loss_total = sum_tensor(train_loss[gen_c_idx])
 
@@ -526,7 +608,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
 
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
-        pbar = tqdm(data_loader, ncols=120)
+        pbar = tqdm(data_loader, ncols=160)
         oth_loss, gen_loss = 0, 0
         correct_oth = 0
         correct_gen = 0
@@ -542,8 +624,8 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
         orig_outs = []
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
-            inputs = batch[:-1]
-            targets = batch[-1]
+            inputs = batch[:-2]
+            targets = batch[-2]
             targets = targets.to(device)
             inputs = trajectron.preprocess_edges(inputs, node_type)
             # Set a generation target for current batch with re-sampling
@@ -553,11 +635,13 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             gen_index = (1 - torch.bernoulli(gen_probs)).nonzero()
             gen_index = gen_index.view(-1)
             gen_targets = targets[gen_index]
+            original_count_stats = {k: (targets == k).sum().item() for k in range(hyperparams['num_classes'])}
             t_loss, g_loss, num_others, num_correct, num_gen, num_gen_correct, p_g_orig_batch, p_g_targ_batch, success, class_gen_batch, class_loss_batch, class_acc_batch, gen_in, gen_out, orig_in, orig_out = train_net(
                 trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs, targets, gen_index, gen_targets, hyperparams, device)
             # Count for the modified batch
+            gen_stats_batch = {k: f"{class_gen_batch[k]}/{original_count_stats[k]}" for k in range(hyperparams['num_classes'])}
             pbar.set_description(
-                f"Epoch {epoch}, {node_type} # Generated: {int(num_gen)} Samples")
+                f"Epoch: {epoch}, {node_type}| Re-Generated: {str(gen_stats_batch)}| oth_loss: {t_loss/num_others+1e-6:.2f}| gen_loss: {g_loss/(num_gen+1e-6):.2f}")
             if gen_in is not None:
                 # to CPU in order to save memory
                 gen_ins.append(input_to_device(gen_in, 'cpu'))
@@ -587,10 +671,8 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             gen_i = cat_inputs(gen_ins)
             orig_o = torch.cat(orig_outs, dim=0)
             orig_i = cat_inputs(orig_ins)
-            import pdb; pdb.set_trace()
             assert gen_o.shape[0] == gen_i[0].shape[0]
             assert orig_o.shape[0] == orig_i[0].shape[0]
-            import pdb; pdb.set_trace()
             file = {
                 "original":
                 {
@@ -603,12 +685,18 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
                     "outputs": gen_o
                 },
             }
-            import pdb; pdb.set_trace()
             # Saving to dill pkl file
             print("Saving generated data...")
+            pathlib.Path(save_gen_dir).mkdir(parents=True, exist_ok=True)
             file_path = os.path.join(save_gen_dir, f"data_orig_gen_{epoch}.pkl")
             with open(file_path, "wb") as dill_file:
                 dill.dump(file, dill_file)
+            # sample 1 examples:
+            sample_indices = torch.randperm(gen_o.shape[0])[:1]
+            orig_sample = select_from_batch_input(orig_i, sample_indices)
+            gen_sample = select_from_batch_input(gen_i, sample_indices)
+            # Drawing random trajectories
+            viz_orig_gen(orig_sample, gen_sample, log_writer, epoch, save_dir=save_gen_dir)
         results[node_type] = {
             'train_loss': oth_loss / total_oth,
             'gen_loss': gen_loss / total_gen,
@@ -618,16 +706,15 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             'p_g_targ': p_g_targ / total_gen,
             't_success': t_success
         }
-        # import pdb; pdb.set_trace()
+
         log_writer.add_scalar(f"{node_type}/classification_f/train/train_loss", oth_loss / total_oth, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/gen_loss", gen_loss / total_gen, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/train_acc", 100. * correct_oth / total_oth, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/gen_acc", 100. * correct_gen / total_gen, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/p_g_orig", p_g_orig / total_gen, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/p_g_targ", p_g_targ / total_gen, epoch)
-        # log_writer.add_scalar(f"{node_type}/classification_f/train/t_success", t_success, epoch)
 
-        msg = '%s | t_Loss: %.3f | g_Loss: %.3f | Acc: %.3f%% (%d/%d) | Acc_gen: %.3f%% (%d/%d) ' \
+        msg = '%s | t_Loss: %.3f | g_Loss: %.3f | Acc: %.3f (%d/%d) | Acc_gen: %.3f (%d/%d) ' \
             '| Prob_orig: %.3f | Prob_targ: %.3f' % (str(node_type),
                                                      results[node_type]['train_loss'], results[node_type]['gen_loss'],
                                                      results[node_type]['train_acc'], correct_oth, total_oth,
@@ -702,7 +789,7 @@ class SupervisedConLoss(nn.Module):
         device = (torch.device('cuda')
                   if features.is_cuda
                   else torch.device('cpu'))
-        # import pdb; pdb.set_trace()
+        
         bs = features.shape[0]
         targets_one_hot = torch.zeros(size=(bs, self.num_classes)).to(device)
         targets_one_hot.scatter_(1, targets.view(-1, 1), 1)
@@ -776,7 +863,6 @@ class F1_Loss(nn.Module):
 
 def focal_loss(input_values, gamma):
     """Computes the focal loss
-
     Reference: https://github.com/kaidic/LDAM-DRW/blob/master/losses.py
     """
     p = torch.exp(-input_values)
@@ -796,3 +882,60 @@ class FocalLoss(nn.Module):
 
     def forward(self, input, target):
         return focal_loss(F.cross_entropy(input, target, weight=self.weight, reduction=self.reduction), self.gamma)
+
+
+class ScoreBasedConLoss(nn.Module):
+    def __init__(self, base_temperature=0.07):
+        super(ScoreBasedConLoss, self).__init__()
+        self.base_temperature = base_temperature
+
+    def forward(self, features, scores, temp=0.1):
+        # features has shape (bs,64)
+        # scores has shape (bs)
+        # univ (14_20) 0.1, 0.5 >>> All (0.16,0.33) Challenging (0.32,0.69)
+        # univ (15_07) 0.1, 0.7 >>> All (0.16,0.33) Challenging (0.32,0.68)
+        # univ (15_44) 0.08,0.7 >>> All (0.16,0.33) Challenging (0.32,0.69)
+        # univ (16_26) 0.1, 0.5 (200) >>> All (0.16,0.32) Challenging (0.32,0.69)
+        # univ (17_39) 0.1, 0.7 (start: epe-10) >>> All (0.16,0.33) Challenging (0.32,0.70)
+        # univ (18_02) 0.1, 0.7 (start: epe-5) >>> All (0.16,0.33) Challenging (0.33,0.72)
+        # univ (18_24) 0.1, 0.7 (start: epe-2) >>> All (0.16,0.33) Challenging (0.32,0.70)
+        # univ (19_) 0.1, 0.7 (no head) >>> All (0.16,0.32) Challenging (0.32,0.69)
+        # zara1 () 0.1, 0.7
+        device = (torch.device('cuda')
+                  if features.is_cuda
+                  else torch.device('cpu'))
+
+        batch_size = features.shape[0]
+        scores = scores.contiguous().view(-1, 1)  # (bs,1)
+        mask_positives = (torch.abs(scores.sub(scores.T)) < 0.1).float().to(device)  # (bs,bs)  # 0.1, 0.08
+        mask_negatives = (torch.abs(scores.sub(scores.T)) > 1.0).float().to(device)  # (bs,bs)  # 0.5, 0.7
+        mask_neutral = mask_positives + mask_negatives  # the zeros elements represent the neutral samples
+
+        # compute logits
+        anchor_dot_contrast = torch.div(torch.matmul(features, features.T), temp)  # (bs,bs)
+        # for numerical stability
+        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)  # (bs,1)
+        logits = anchor_dot_contrast - logits_max.detach()
+
+        # mask-out self-contrast cases
+        logits_mask = torch.scatter(
+            torch.ones_like(mask_positives),
+            1,
+            torch.arange(batch_size).view(-1, 1).to(device),
+            0
+        ) * mask_neutral
+
+        mask_positives = mask_positives * logits_mask  # (bs,bs)
+
+        # compute log_prob
+        exp_logits = torch.exp(logits) * logits_mask
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-20)
+
+        # compute mean of log-likelihood over positive
+        mean_log_prob_pos = (mask_positives * log_prob).sum(1) / (mask_positives.sum(1) + 1e-20)
+
+        # loss
+        loss = - (temp / self.base_temperature) * mean_log_prob_pos
+        loss = loss.view(1, batch_size).mean()
+
+        return loss, mask_positives.sum(1).mean(), mask_negatives.sum(1).mean()
