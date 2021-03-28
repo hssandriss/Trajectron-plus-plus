@@ -241,78 +241,6 @@ def sum_tensor(tensor):
     return tensor.float().sum().item()
 
 
-def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets, p_accept,
-               gamma, lam, step_size, random_start=True, max_iter=10):
-    """
-    Over-sampling via M2m Algorithm (Pg: 4) from line 7:e
-
-    Args:
-        inputs: seed input x0
-        seed_targets: source target k0
-        targets: goal target k*
-
-    Returns:
-        inputs: generated input x*
-        correct: if the generated input is good enough to be from k* or should
-                 we choose a random sample from k* (oversampling)
-    """
-    torch.backends.cudnn.enabled = False
-    trajectron.model_registrar.eval()
-    trajectron_g.model_registrar.eval()
-    criterion = nn.CrossEntropyLoss()
-    # How well does g perform initially on seed_inputs/targets ?
-    mask_reliable = filter_unreliable(trajectron_g, node_type, 0.8, seed_targets, seed_inputs)
-    # We will use x_st_t and preprocessed_edges
-    (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map) = seed_inputs
-    # Random Noise
-    if random_start:
-        # Add random noise to node states
-        # Verify the shapes of the noise
-        random_noise = random_perturb(x_st_t, 'l2', 0.5)
-        x_st_t = torch.clamp(x_st_t + random_noise, 0, 1)
-
-    if not first_history_index.is_leaf or first_history_index.requires_grad:
-        (first_history_index, x_t, y_t, y_st_t, robot_traj_st_t, map) = tuple(tensor.detach().requires_grad_(False) if isinstance(tensor, torch.Tensor) else None
-                                                                              for tensor in (first_history_index, x_t, y_t, y_st_t, robot_traj_st_t, map))
-        for key in preprocessed_edges.keys():  # Edge data
-            preprocessed_edges[key][0] = preprocessed_edges[key][0].detach().requires_grad_(False)
-            preprocessed_edges[key][1] = preprocessed_edges[key][1].detach().requires_grad_(False)
-    initial_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
-    initial_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
-    # Loop for optimizing the objective
-    x_st_t_original = x_st_t.clone()
-    for _ in range(max_iter):
-        x_st_t = x_st_t.clone().detach().requires_grad_(True)
-        inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
-        outputs_g, _ = trajectron_g.predict(inputs, node_type, mode=ModeKeys.EVAL)
-        outputs_r, _ = trajectron.predict(inputs, node_type, mode=ModeKeys.EVAL)
-        loss = criterion(outputs_g, gen_targets) + lam * classwise_loss(outputs_r, seed_targets)
-        # Calculate grad with respect to each part of the input: x, n_s_t0, x_nr_t
-        # Note that to flatten preprocessed_edges use: [*[*preprocessed_edges.values()][0], x_st_t]
-        grad_x_st_t = torch.autograd.grad(loss, [x_st_t])
-        x_st_t = x_st_t - make_step(grad_x_st_t[0], 'l2', step_size)
-        x_st_t = torch.clamp(x_st_t, 0, 1)
-    # Weights of the network remain unchanged
-    ##########################################
-    after_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
-    after_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
-    assert torch.all(initial_rnn_weights_g.eq(after_rnn_weights_g))
-    assert torch.all(initial_rnn_weights_f.eq(after_rnn_weights_f))
-    inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
-    inputs = detach_batch_input(inputs)
-    # Inputs now has the new values (verified)
-    outputs_g, _ = trajectron_g.predict(inputs, node_type, mode=ModeKeys.EVAL)
-    one_hot = torch.zeros_like(outputs_g)
-    one_hot.scatter_(1, gen_targets.view(-1, 1), 1)
-    probs_g = torch.softmax(outputs_g, dim=1)[one_hot.to(torch.bool)]
-    correct = ((probs_g >= gamma) * torch.bernoulli(p_accept)).type(torch.bool).to(device)
-    correct = correct * mask_reliable
-
-    torch.backends.cudnn.enabled = True
-    trajectron.model_registrar.train()
-    return inputs, correct
-
-
 def filter_unreliable(trajectron_g, node_type, threshold, seed_targets, seed_inputs):
     outputs_g, _ = trajectron_g.predict(seed_inputs, node_type, mode=ModeKeys.EVAL)
     one_hot = torch.zeros_like(outputs_g)
@@ -347,7 +275,7 @@ def viz_orig_gen(input_orig,
     ax.text(x_st_t_gen[0, 0], x_st_t_gen[0, 1], "initial", fontsize=7)
     ax.text(x_st_t_gen[-1, 0], x_st_t_gen[-1, 1], "final", fontsize=7)
     ax.axis('equal')
-    fig.savefig(f'example_gen_epoch{epoch}.png', dpi=300)
+    fig.savefig(os.path.join(save_dir, f'example_gen_epoch{epoch}.png'), dpi=300)
     log_writer.add_figure('generation/trajectory_visualization', fig, epoch)
 
 
@@ -464,6 +392,100 @@ def select_from_batch_input(input, select_idx):
 #         ret = ret and torch.all(dic_1[k][0].eq(dic_2[k][0]))
 #         ret = ret and torch.all(dic_1[k][1].eq(dic_2[k][1]))
 #     return ret
+
+
+def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets, p_accept,
+               gamma, lam, step_size, random_start=True, max_iter=10):
+    """
+    Over-sampling via M2m Algorithm (Pg: 4) from line 7:e
+
+    Args:
+        inputs: seed input x0
+        seed_targets: source target k0
+        targets: goal target k*
+
+    Returns:
+        inputs: generated input x*
+        correct: if the generated input is good enough to be from k* or should
+                 we choose a random sample from k* (oversampling)
+    """
+    torch.backends.cudnn.enabled = False
+    trajectron.model_registrar.eval()
+    trajectron_g.model_registrar.eval()
+    criterion = nn.CrossEntropyLoss()
+    # How well does g perform initially on seed_inputs/targets ?
+    mask_reliable = filter_unreliable(trajectron_g, node_type, 0.8, seed_targets, seed_inputs)
+    # We will use x_st_t and preprocessed_edges
+    (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map) = seed_inputs
+    if not first_history_index.is_leaf or first_history_index.requires_grad:
+        (first_history_index, x_t, y_t, y_st_t, robot_traj_st_t, map) = tuple(tensor.detach().requires_grad_(False) if isinstance(tensor, torch.Tensor) else None
+                                                                              for tensor in (first_history_index, x_t, y_t, y_st_t, robot_traj_st_t, map))
+        for key in preprocessed_edges.keys():  # Edge data
+            preprocessed_edges[key][0] = preprocessed_edges[key][0].detach().requires_grad_(False)
+            preprocessed_edges[key][1] = preprocessed_edges[key][1].detach().requires_grad_(False)
+    x_st_t_original = x_st_t.clone()
+    # Editing the state history while keeping initial and final states fixed
+    x_st_t_i = x_st_t[:, 0, :].unsqueeze(1)
+    x_st_t_f = x_st_t[:, -1, :].unsqueeze(1)
+    x_st_t_o = x_st_t[:, 1:-1, :]
+    # Preparing edges (decomposing the preprocessed edges dict)
+    edge_keys = list(preprocessed_edges.keys())
+    edge_masks = [preprocessed_edges[k][1] for k in preprocessed_edges.keys()]
+    joint_histories = [preprocessed_edges[k][0] for k in preprocessed_edges.keys()]
+    import pdb; pdb.set_trace()
+    # Random Noise
+    if random_start:
+        # Verify the shapes of the noise
+        # Add random noise to node states
+        random_noise = random_perturb(x_st_t_o, 'l2', 0.5)
+        x_st_t_o = torch.clamp(x_st_t_o + random_noise, 0, 1)
+        for i in range(len(joint_histories)):
+            random_noise = random_perturb(joint_histories[i], 'l2', 0.5)
+            joint_histories[i] = torch.clamp(joint_histories[i] + random_noise, 0, 1)
+    initial_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
+    initial_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
+    # Loop for optimizing the objective
+    for _ in range(max_iter):
+        x_st_t_o = x_st_t_o.clone().detach().requires_grad_(True)
+        x_st_t = torch.cat((x_st_t_i, x_st_t_o, x_st_t_f), dim=1)
+        joint_histories = [tensor.clone().detach().requires_grad_(True) for tensor in joint_histories]
+        edge_values = [[joint_histories[i], edge_masks[i]] for i in range(len(edge_masks))]
+        preprocessed_edges = dict(zip(edge_keys, edge_values))
+        inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
+        # Calculating the objective
+        outputs_g, _ = trajectron_g.predict(inputs, node_type, mode=ModeKeys.EVAL)
+        outputs_r, _ = trajectron.predict(inputs, node_type, mode=ModeKeys.EVAL)
+        loss = criterion(outputs_g, gen_targets) + lam * classwise_loss(outputs_r, seed_targets)
+        # Calculate grad with respect to each part of the input: x, n_s_t0, x_nr_t
+        grad_vals = torch.autograd.grad(loss, [x_st_t_o, *joint_histories])
+        grad_x_st_t = grad_vals[0]
+        grad_joint_histories = (grad_vals[1:])
+        x_st_t_o = x_st_t_o - make_step(grad_x_st_t, 'l2', step_size)
+        x_st_t_o = torch.clamp(x_st_t_o, 0, 1)
+        for i in range(len(joint_histories)):
+            joint_histories[i] = joint_histories[i] - make_step(grad_joint_histories[i], 'l2', step_size)
+            joint_histories[i] = torch.clamp(joint_histories[i], 0, 1)
+    # Weights of the network remain unchanged
+    after_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
+    after_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
+    assert torch.all(initial_rnn_weights_g.eq(after_rnn_weights_g))
+    assert torch.all(initial_rnn_weights_f.eq(after_rnn_weights_f))
+    x_st_t = torch.cat((x_st_t_i, x_st_t_o, x_st_t_f), dim=1)
+    edge_values = [[joint_histories[i], edge_masks[i]] for i in range(len(edge_masks))]
+    preprocessed_edges = dict(zip(edge_keys, edge_values))
+    inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
+    inputs = detach_batch_input(inputs)
+    # Inputs now has the new values (verified)
+    outputs_g, _ = trajectron_g.predict(inputs, node_type, mode=ModeKeys.EVAL)
+    one_hot = torch.zeros_like(outputs_g)
+    one_hot.scatter_(1, gen_targets.view(-1, 1), 1)
+    probs_g = torch.softmax(outputs_g, dim=1)[one_hot.to(torch.bool)]
+    correct = ((probs_g >= gamma) * torch.bernoulli(p_accept)).type(torch.bool).to(device)
+    correct = correct * mask_reliable
+
+    torch.backends.cudnn.enabled = True
+    trajectron.model_registrar.train()
+    return inputs, correct
 
 
 def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs_orig_tuple,
@@ -789,7 +811,7 @@ class SupervisedConLoss(nn.Module):
         device = (torch.device('cuda')
                   if features.is_cuda
                   else torch.device('cpu'))
-        
+
         bs = features.shape[0]
         targets_one_hot = torch.zeros(size=(bs, self.num_classes)).to(device)
         targets_one_hot.scatter_(1, targets.view(-1, 1), 1)

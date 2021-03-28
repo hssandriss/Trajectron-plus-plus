@@ -113,7 +113,7 @@ if __name__ == '__main__':
     # model_tag = "model_classification_22_02_2021-12_27_cosann_10_2_ce_2_conloss_eth_ar3"
     if args.gen:
         # if we are generating (create subfolder for f)
-        model_dir_f = os.path.join(args.log_dir, args.experiment, model_tag, model_tag + '_f')
+        model_dir_f = os.path.join(args.log_dir, args.experiment, model_tag, model_tag + '_f_edge_and_hist')
         pathlib.Path(model_dir_f).mkdir(parents=True, exist_ok=True)
         model_dir_g = os.path.join(args.log_dir, args.experiment, model_tag)
         checkpoint_name = 'model_registrar-%d-%s.pt' % (args.net_g_ts, args.net_g_extra_tag)
@@ -351,11 +351,11 @@ if __name__ == '__main__':
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
             print("**** Train Epoch without generation ****")
-            if epoch <= 200:
-                epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
-                                                         criterion_1, train_data_loader, epoch, hyperparams, log_writer, args.device)
-            else:
-                class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
+            # if epoch <= 200:
+            #     epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
+            #                                              criterion_1, train_data_loader, epoch, hyperparams, log_writer, args.device)
+            # else:
+            class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
                                                     criterion_2, train_data_loader, epoch, hyperparams, log_writer, args.device)
         if epoch >= 250:
             criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
