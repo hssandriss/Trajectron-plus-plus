@@ -219,7 +219,7 @@ def classwise_loss(outputs, targets):
 
 def make_step(grad, attack, step_size):
     if attack == 'l2':
-        grad_norm = torch.norm(grad.view(grad.shape[0], -1), dim=1).view(-1, 1, 1)
+        grad_norm = torch.norm(grad.reshape(grad.shape[0], -1), dim=1).view(-1, 1, 1)
         scaled_grad = grad / (grad_norm + 1e-10)
         step = step_size * scaled_grad
     elif attack == 'inf':
@@ -385,15 +385,6 @@ def select_from_batch_input(input, select_idx):
     return ret
 
 
-# def edge_dic_eq(dic_1, dic_2):
-#     ret = True
-#     assert dic_1.keys() == dic_2.keys()
-#     for k in dic_1.keys():
-#         ret = ret and torch.all(dic_1[k][0].eq(dic_2[k][0]))
-#         ret = ret and torch.all(dic_1[k][1].eq(dic_2[k][1]))
-#     return ret
-
-
 def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets, p_accept,
                gamma, lam, step_size, random_start=True, max_iter=10):
     """
@@ -425,30 +416,32 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
             preprocessed_edges[key][1] = preprocessed_edges[key][1].detach().requires_grad_(False)
     x_st_t_original = x_st_t.clone()
     # Editing the state history while keeping initial and final states fixed
-    x_st_t_i = x_st_t[:, 0, :].unsqueeze(1)
-    x_st_t_f = x_st_t[:, -1, :].unsqueeze(1)
-    x_st_t_o = x_st_t[:, 1:-1, :]
+    x_st_t_i = x_st_t[:, 0, :].unsqueeze(1).to(device)
+    x_st_t_f = x_st_t[:, -1, :].unsqueeze(1).to(device)
+    x_st_t_o = x_st_t[:, 1:-1, :].to(device)
     # Preparing edges (decomposing the preprocessed edges dict)
     edge_keys = list(preprocessed_edges.keys())
     edge_masks = [preprocessed_edges[k][1] for k in preprocessed_edges.keys()]
-    joint_histories = [preprocessed_edges[k][0] for k in preprocessed_edges.keys()]
-    import pdb; pdb.set_trace()
+    combined_neighbors = [preprocessed_edges[k][0][:, :, :6] for k in preprocessed_edges.keys()]  # [bs, hist_len, state]
+    
     # Random Noise
     if random_start:
         # Verify the shapes of the noise
         # Add random noise to node states
         random_noise = random_perturb(x_st_t_o, 'l2', 0.5)
         x_st_t_o = torch.clamp(x_st_t_o + random_noise, 0, 1)
-        for i in range(len(joint_histories)):
-            random_noise = random_perturb(joint_histories[i], 'l2', 0.5)
-            joint_histories[i] = torch.clamp(joint_histories[i] + random_noise, 0, 1)
+        for i in range(len(combined_neighbors)):
+            random_noise = random_perturb(combined_neighbors[i], 'l2', 0.5)
+            combined_neighbors[i] = torch.clamp(combined_neighbors[i] + random_noise, 0, 1)
     initial_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
     initial_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
+
     # Loop for optimizing the objective
     for _ in range(max_iter):
         x_st_t_o = x_st_t_o.clone().detach().requires_grad_(True)
-        x_st_t = torch.cat((x_st_t_i, x_st_t_o, x_st_t_f), dim=1)
-        joint_histories = [tensor.clone().detach().requires_grad_(True) for tensor in joint_histories]
+        x_st_t = torch.cat((x_st_t_i, x_st_t_o, x_st_t_f), dim=1).to(device)
+        combined_neighbors = [tensor.clone().detach().requires_grad_(True) for tensor in combined_neighbors]
+        joint_histories = [torch.cat((x_st_t, tensor), dim=-1) for tensor in combined_neighbors]
         edge_values = [[joint_histories[i], edge_masks[i]] for i in range(len(edge_masks))]
         preprocessed_edges = dict(zip(edge_keys, edge_values))
         inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
@@ -457,23 +450,31 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         outputs_r, _ = trajectron.predict(inputs, node_type, mode=ModeKeys.EVAL)
         loss = criterion(outputs_g, gen_targets) + lam * classwise_loss(outputs_r, seed_targets)
         # Calculate grad with respect to each part of the input: x, n_s_t0, x_nr_t
-        grad_vals = torch.autograd.grad(loss, [x_st_t_o, *joint_histories])
+        
+        grad_vals = torch.autograd.grad(loss, [x_st_t_o, *combined_neighbors])
+        
         grad_x_st_t = grad_vals[0]
-        grad_joint_histories = (grad_vals[1:])
+        grad_neighbors = grad_vals[1:]
+        
         x_st_t_o = x_st_t_o - make_step(grad_x_st_t, 'l2', step_size)
         x_st_t_o = torch.clamp(x_st_t_o, 0, 1)
-        for i in range(len(joint_histories)):
-            joint_histories[i] = joint_histories[i] - make_step(grad_joint_histories[i], 'l2', step_size)
-            joint_histories[i] = torch.clamp(joint_histories[i], 0, 1)
+        
+        for i in range(len(combined_neighbors)):
+            combined_neighbors[i] = combined_neighbors[i] - make_step(grad_neighbors[i], 'l2', step_size)
+            combined_neighbors[i] = torch.clamp(combined_neighbors[i], 0, 1)
+        
     # Weights of the network remain unchanged
     after_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
     after_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
     assert torch.all(initial_rnn_weights_g.eq(after_rnn_weights_g))
     assert torch.all(initial_rnn_weights_f.eq(after_rnn_weights_f))
-    x_st_t = torch.cat((x_st_t_i, x_st_t_o, x_st_t_f), dim=1)
+    x_st_t = torch.cat((x_st_t_i, x_st_t_o, x_st_t_f), dim=1).to(device)
+    joint_histories = [torch.cat((x_st_t, tensor), dim=-1).to(device) for tensor in combined_neighbors]
     edge_values = [[joint_histories[i], edge_masks[i]] for i in range(len(edge_masks))]
     preprocessed_edges = dict(zip(edge_keys, edge_values))
     inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
+    
+    # inputs = (first_history_index.to(device), x_t.to(device), y_t.to(device), x_st_t.to(device), y_st_t.to(device), preprocessed_edges, robot_traj_st_t, map)
     inputs = detach_batch_input(inputs)
     # Inputs now has the new values (verified)
     outputs_g, _ = trajectron_g.predict(inputs, node_type, mode=ModeKeys.EVAL)
@@ -485,6 +486,7 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
 
     torch.backends.cudnn.enabled = True
     trajectron.model_registrar.train()
+    
     return inputs, correct
 
 
@@ -497,7 +499,7 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     batch_size = inputs_orig_tuple[0].size(0)
     ########################
     # inputs = inputs_orig_tuple.clone()
-
+    # [tensor.is_cuda if isinstance(tensor, torch.Tensor) else None for tensor in inputs_orig_tuple]
     inputs_tuple = clone_batch_input(inputs_orig_tuple)
 
     targets = targets_orig.clone()
@@ -522,6 +524,7 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     seed_targets = targets_orig[select_idx]
     # seed_inputs = inputs_orig_tuple[select_idx]
     seed_inputs = select_from_batch_input(inputs_tuple, select_idx)
+    
     # ! Now we have sampled seed classes k0 of initial point x0 given gen_target class k.
     gen_inputs, correct_mask = generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets,
                                           p_accept, hyperparams['gamma'], hyperparams['lam'], hyperparams['step_size'], True, hyperparams['attack_iter'])
@@ -650,6 +653,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             targets = batch[-2]
             targets = targets.to(device)
             inputs = trajectron.preprocess_edges(inputs, node_type)
+            inputs = input_to_device(inputs, device)
             # Set a generation target for current batch with re-sampling
             # Keep the sample with this probability
             gen_probs = N_SAMPLES_PER_CLASS_T[targets] / N_SAMPLES_PER_CLASS_T[0]
