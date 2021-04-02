@@ -113,12 +113,11 @@ if __name__ == '__main__':
     # model_tag = "model_classification_22_02_2021-12_27_cosann_10_2_ce_2_conloss_eth_ar3"
     if args.gen:
         # if we are generating (create subfolder for f)
-        model_dir_f = os.path.join(args.log_dir, args.experiment, model_tag, model_tag + '_f_edge_and_hist')
+        model_dir_f = os.path.join(args.log_dir, args.experiment, model_tag, model_tag + '_f_edge_and_hist_' + datetime.now().strftime("%d_%m_%Y-%H_%M"))
         pathlib.Path(model_dir_f).mkdir(parents=True, exist_ok=True)
         model_dir_g = os.path.join(args.log_dir, args.experiment, model_tag)
         checkpoint_name = 'model_registrar-%d-%s.pt' % (args.net_g_ts, args.net_g_extra_tag)
         copyfile(os.path.join(model_dir_g, checkpoint_name), os.path.join(model_dir_f, checkpoint_name))
-
     if not args.debug: 
         # Create the log and model directiory if they're not present.
         if not args.gen:
@@ -132,6 +131,7 @@ if __name__ == '__main__':
 
         log_writer = SummaryWriter(log_dir=model_dir)
 
+    print(model_dir)
     # Load training and evaluation environments and scenes
     train_scenes = []
     train_data_path = os.path.join(args.data_dir, args.train_data_dict)
@@ -151,7 +151,7 @@ if __name__ == '__main__':
 
     train_scenes = train_env.scenes
     train_scenes_sample_probs = train_env.scenes_freq_mult_prop if args.scene_freq_mult_train else None
-
+    
     train_dataset = EnvironmentDatasetKalman(train_env,
                                              scores_path,
                                              hyperparams['state'],
@@ -176,7 +176,7 @@ if __name__ == '__main__':
     hyperparams['attack_iter'] = 10
     hyperparams['non_linearity'] = 'relu'
     hyperparams['data_loader_sampler'] = 'random'
-    hyperparams['learning_rate_style'] = 'cosannw'
+    # hyperparams['learning_rate_style'] = 'cosannw'
     # hyperparams['learning_rate'] = 0.01  # Override lr
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(args.device)
@@ -215,16 +215,19 @@ if __name__ == '__main__':
 
         eval_scenes = eval_env.scenes
         eval_scenes_sample_probs = eval_env.scenes_freq_mult_prop if args.scene_freq_mult_eval else None
-
-        eval_dataset = EnvironmentDataset(eval_env,
-                                          hyperparams['state'],
-                                          hyperparams['pred_state'],
-                                          scene_freq_mult=hyperparams['scene_freq_mult_eval'],
-                                          node_freq_mult=hyperparams['node_freq_mult_eval'],
-                                          hyperparams=hyperparams,
-                                          min_history_timesteps=hyperparams['minimum_history_length'],
-                                          min_future_timesteps=hyperparams['prediction_horizon'],
-                                          return_robot=not args.incl_robot_node)
+        
+        eval_dataset = EnvironmentDatasetKalman(eval_env,
+                                                scores_path,
+                                                hyperparams['state'],
+                                                hyperparams['pred_state'],
+                                                scene_freq_mult=hyperparams['scene_freq_mult_eval'],
+                                                node_freq_mult=hyperparams['node_freq_mult_eval'],
+                                                hyperparams=hyperparams,
+                                                min_history_timesteps=hyperparams['minimum_history_length'],
+                                                min_future_timesteps=hyperparams['prediction_horizon'],
+                                                return_robot=not args.incl_robot_node,
+                                                borders=train_dataset.boarders[0])
+        
         eval_data_loader = dict()
         for node_type_data_set in eval_dataset:
             node_type_dataloader = utils.data.DataLoader(node_type_data_set,
@@ -239,6 +242,7 @@ if __name__ == '__main__':
     # Offline Calculate Scene Graph
     if hyperparams['offline_scene_graph'] == 'yes':
         print(f"Offline calculating scene graphs")
+        print("Training scene graphs")
         for i, scene in enumerate(train_scenes):
             scene.calculate_scene_graph(train_env.attention_radius,
                                         hyperparams['edge_addition_filter'],
@@ -246,6 +250,7 @@ if __name__ == '__main__':
             print(f"Created Scene Graph for Training Scene {i}")
 
         if args.eval_every is not None or args.vis_every is not None:
+            print("Evaluation scene graphs")
             for i, scene in enumerate(eval_scenes):
                 scene.calculate_scene_graph(eval_env.attention_radius,
                                             hyperparams['edge_addition_filter'],
@@ -357,7 +362,7 @@ if __name__ == '__main__':
             # else:
             class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
                                                     criterion_2, train_data_loader, epoch, hyperparams, log_writer, args.device)
-        if epoch >= 250:
+        if epoch >= 100:
             criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
             # Use now weighted sampler
             # train_data_loader = dict()
@@ -372,6 +377,12 @@ if __name__ == '__main__':
             #     train_data_loader[node_type_data_set.node_type] = node_type_dataloader
             #     # reset lr scheduler
             #     lr_scheduler[node_type_data_set.node_type].load_state_dict(initial_lr_state[node_type])
+        if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
+            validation_metrics(model=trajectron, criterion=criterion_2,
+                               eval_data_loader=eval_data_loader, epoch=epoch,
+                               eval_device=args.device, log_writer=log_writer)
+
+
         train_dataset.augment = False
         cls_accuracies.append({"epoch": epoch, "accuracy per class": class_acc})
         cls_losses.append({"epoch": epoch, "loss per class": class_loss})

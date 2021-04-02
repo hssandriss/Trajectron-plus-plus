@@ -686,79 +686,58 @@ class MultiHypothesisNet(object):
         else:
             return ret
 
-    def preprocess_edge(self,
-                        node_history_st,
-                        edge_type,
-                        neighbors,
-                        neighbors_edge_value):
+    def preprocess_edge(self, node_history_st, edge_type, neighbors, neighbors_edge_value):
         max_hl = self.hyperparams['maximum_history_length']
         edge_states_list = list()  # list of [#of neighbors, max_ht, state_dim]
         # Get neighbors for timestep in batch
         for i, neighbor_states in enumerate(neighbors):
             if len(neighbor_states) == 0:  # There are no neighbors for edge type # TODO necessary?
-                neighbor_state_length = int(
-                    np.sum([len(entity_dims)
-                            for entity_dims in self.state[edge_type[1]].values()])
-                )
-                edge_states_list.append(torch.zeros(
-                    (1, max_hl + 1, neighbor_state_length), device=self.device))
+                neighbor_state_length = int(np.sum([len(entity_dims) for entity_dims in self.state[edge_type[1]].values()]))
+                edge_states_list.append(torch.zeros((1, max_hl + 1, neighbor_state_length), device=self.device))
             else:
-                edge_states_list.append(torch.stack(
-                    neighbor_states, dim=0).to(self.device))
+                edge_states_list.append(torch.stack(neighbor_states, dim=0).to(self.device))
         # TODO This results => list of Bs tensors of shape [7, 8, 6]
+        
         if self.hyperparams['edge_state_combine_method'] == 'sum':
             # Used in Structural-RNN to combine edges as well.
             op_applied_edge_states_list = list()
             for neighbors_state in edge_states_list:
-                op_applied_edge_states_list.append(
-                    torch.sum(neighbors_state, dim=0))
-            combined_neighbors = torch.stack(
-                op_applied_edge_states_list, dim=0)
+                op_applied_edge_states_list.append(torch.sum(neighbors_state, dim=0))
+            combined_neighbors = torch.stack(op_applied_edge_states_list, dim=0)
             # TODO This results => in tensor [Bs, T, State]
             if self.hyperparams['dynamic_edges'] == 'yes':
                 # Should now be (bs, time, 1)
                 op_applied_edge_mask_list = list()
                 for edge_value in neighbors_edge_value:
-                    op_applied_edge_mask_list.append(torch.clamp(torch.sum(edge_value.to(self.device),
-                                                                           dim=0, keepdim=True), max=1.))
-                combined_edge_masks = torch.stack(
-                    op_applied_edge_mask_list, dim=0)
+                    op_applied_edge_mask_list.append(torch.clamp(torch.sum(edge_value.to(self.device), dim=0, keepdim=True), max=1.))
+                combined_edge_masks = torch.stack(op_applied_edge_mask_list, dim=0)
 
         elif self.hyperparams['edge_state_combine_method'] == 'max':
             # Used in NLP, e.g. max over word embeddings in a sentence.
             op_applied_edge_states_list = list()
             for neighbors_state in edge_states_list:
-                op_applied_edge_states_list.append(
-                    torch.max(neighbors_state, dim=0))
-            combined_neighbors = torch.stack(
-                op_applied_edge_states_list, dim=0)
+                op_applied_edge_states_list.append(torch.max(neighbors_state, dim=0))
+            combined_neighbors = torch.stack(op_applied_edge_states_list, dim=0)
             if self.hyperparams['dynamic_edges'] == 'yes':
                 # Should now be (bs, time, 1)
                 op_applied_edge_mask_list = list()
                 for edge_value in neighbors_edge_value:
-                    op_applied_edge_mask_list.append(torch.clamp(torch.max(edge_value.to(self.device),
-                                                                           dim=0, keepdim=True), max=1.))
-                combined_edge_masks = torch.stack(
-                    op_applied_edge_mask_list, dim=0)
+                    op_applied_edge_mask_list.append(torch.clamp(torch.max(edge_value.to(self.device), dim=0, keepdim=True), max=1.))
+                combined_edge_masks = torch.stack(op_applied_edge_mask_list, dim=0)
 
         elif self.hyperparams['edge_state_combine_method'] == 'mean':
             # Used in NLP, e.g. mean over word embeddings in a sentence.
             op_applied_edge_states_list = list()
             for neighbors_state in edge_states_list:
-                op_applied_edge_states_list.append(
-                    torch.mean(neighbors_state, dim=0))
-            combined_neighbors = torch.stack(
-                op_applied_edge_states_list, dim=0)
+                op_applied_edge_states_list.append(torch.mean(neighbors_state, dim=0))
+            combined_neighbors = torch.stack(op_applied_edge_states_list, dim=0)
             if self.hyperparams['dynamic_edges'] == 'yes':
                 # Should now be (bs, time, 1)
                 op_applied_edge_mask_list = list()
                 for edge_value in neighbors_edge_value:
-                    op_applied_edge_mask_list.append(torch.clamp(torch.mean(edge_value.to(self.device),
-                                                                            dim=0, keepdim=True), max=1.))
-                combined_edge_masks = torch.stack(
-                    op_applied_edge_mask_list, dim=0)
-        joint_history = torch.cat(
-            [combined_neighbors, node_history_st], dim=-1)
+                    op_applied_edge_mask_list.append(torch.clamp(torch.mean(edge_value.to(self.device), dim=0, keepdim=True), max=1.))
+                combined_edge_masks = torch.stack(op_applied_edge_mask_list, dim=0)
+        joint_history = torch.cat([combined_neighbors, node_history_st], dim=-1)
         return joint_history, combined_edge_masks
 
     def encode_total_edge_influence(self, mode, encoded_edges, node_history_encoder, batch_size):

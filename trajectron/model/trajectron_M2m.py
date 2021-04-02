@@ -58,22 +58,16 @@ class Trajectron(object):
 
     def preprocess_edges(self, batch, node_type):
         mode = ModeKeys.TRAIN
-        (first_history_index,
-         x_t, y_t, x_st_t, y_st_t,
-         neighbors_data_st,
-         neighbors_edge_value,
-         robot_traj_st_t,
-         map) = batch
+        (first_history_index, x_t, y_t, x_st_t, y_st_t, neighbors_data_st, neighbors_edge_value, robot_traj_st_t, map) = batch
         model = self.node_models_dict[node_type]
+
         if self.hyperparams['edge_encoding']:
             preprocessed_edges = {}
             for edge_type in model.edge_types:
                 # Encode edges for given edge type
-                joint_history, combined_edge_masks = model.preprocess_edge(x_st_t.to(self.device),
-                                                                           edge_type,
-                                                                           restore(neighbors_data_st)[
-                                                                               edge_type],
-                                                                           restore(neighbors_edge_value)[edge_type])
+                joint_history, combined_edge_masks = model.preprocess_edge(x_st_t.to(self.device), edge_type, restore(neighbors_data_st)[
+                                                                           edge_type], restore(neighbors_edge_value)[edge_type])
+
                 preprocessed_edges[edge_type] = [joint_history, combined_edge_masks]
         return (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
 
@@ -87,7 +81,7 @@ class Trajectron(object):
             - y: Label / future of the node. (Ground truth)
             - n_s_t0: Standardized current state of the node.
         """""
-        
+
         (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map) = batch
         x = x_t.to(self.device)
         y = y_t.to(self.device)
@@ -124,6 +118,7 @@ class Trajectron(object):
 
     def predict(self, batch, node_type, mode):
         x, n_s_t0, x_nr_t = self.encoded_x(batch, node_type, mode)
-        assert x.is_leaf == False, "You are not backpropagating on the encoder"
+        if mode == ModeKeys.TRAIN:
+            assert x.is_leaf == False, "You are not backpropagating on the encoder"
         logits, features = self.predict_kalman_class(x, n_s_t0, x_nr_t, node_type, normalize_weights=False)
         return logits, features
