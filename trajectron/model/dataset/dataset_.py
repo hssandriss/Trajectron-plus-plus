@@ -72,9 +72,9 @@ class NodeTypeDatasetKalman(data.Dataset):
         self.edge_types = [edge_type for edge_type in env.get_edge_types() if edge_type[0] is node_type]
         self.num_classes = predifined_num_classes
         self.load_scores()
-        self.rebalance_bins_binary(borders=borders)
+        # self.rebalance_bins_binary(borders=borders)
         # self.rebalance_bins_multi(stack_right=stack_right)
-        # self.rebalance_3_bins(borders=borders)
+        self.rebalance_3_bins(borders=borders)
 
     def index_env(self, node_freq_mult, scene_freq_mult, **kwargs):
         index = list()
