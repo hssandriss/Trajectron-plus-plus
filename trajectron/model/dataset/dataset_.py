@@ -160,7 +160,7 @@ class NodeTypeDatasetKalman(data.Dataset):
         self.class_weights = class_weights
         self.kalman_classes = lbls
         self.class_count_dict = dic_
-        self.borders = borders
+        self.borders = split_cls
 
     def rebalance_bins_multi(self, stack_right):
         # TODO Use 1 spaced clusters
