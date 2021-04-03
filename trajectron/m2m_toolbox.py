@@ -106,7 +106,7 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
                                   ret_class_loss_log[k], epoch)
             log_writer.add_scalar(f"{node_type}/classification/train/accuracy_class_{k}", ret_class_acc[k], epoch)
 
-        print("Epoch Loss: " + bcolors.OKGREEN + str(round(loss.mean().log10().item(), 3)) + bcolors.ENDC)
+        print("Epoch Loss: " + bcolors.OKGREEN + str(round(loss.mean().item(), 3)) + " (" + str(round(loss.mean().log10().item(), 3)) + ")" + bcolors.ENDC)
         print("Epoch Accuracy: " + bcolors.OKGREEN + str(round(correct_epoch / data_loader.dataset.len, 3)) + bcolors.ENDC)
         print("Accuracy per class: ")
         print(bcolors.OKGREEN + str({k: round(ret_class_acc[k], 3)

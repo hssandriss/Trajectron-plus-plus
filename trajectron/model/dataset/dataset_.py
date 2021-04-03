@@ -30,7 +30,7 @@ class EnvironmentDatasetKalman(object):
             if node_type not in hyperparams['pred_state']:
                 continue
             node_type_dataset = NodeTypeDatasetKalman(env, scores_path, node_type, state, pred_state, node_freq_mult,
-                                                      scene_freq_mult, hyperparams, stack_right=stack_right, predifined_num_classes=predifined_num_classes, **kwargs)
+                                                      scene_freq_mult, hyperparams, stack_right=stack_right, predifined_num_classes=predifined_num_classes, borders=borders, **kwargs)
             self.node_type_datasets.append(node_type_dataset)
             self.kalman_classes.append(node_type_dataset.kalman_classes)
             self.class_count_dict.append(node_type_dataset.class_count_dict)
@@ -72,9 +72,9 @@ class NodeTypeDatasetKalman(data.Dataset):
         self.edge_types = [edge_type for edge_type in env.get_edge_types() if edge_type[0] is node_type]
         self.num_classes = predifined_num_classes
         self.load_scores()
-        # self.rebalance_bins_binary()
+        self.rebalance_bins_binary(borders=borders)
         # self.rebalance_bins_multi(stack_right=stack_right)
-        self.rebalance_3_bins(borders=borders)
+        # self.rebalance_3_bins(borders=borders)
 
     def index_env(self, node_freq_mult, scene_freq_mult, **kwargs):
         index = list()
@@ -113,7 +113,7 @@ class NodeTypeDatasetKalman(data.Dataset):
                 replacement=True
             )
 
-    def rebalance_bins_binary(self, split=0.1):
+    def rebalance_bins_binary(self, split=0.1, borders=None):
         env_name = self.env.scenes[0].name
         with open(os.path.join(self.scores_path, '%s_kalman.pkl' % env_name), 'rb') as f:
             scores = dill.load(f)
@@ -124,15 +124,20 @@ class NodeTypeDatasetKalman(data.Dataset):
             dic[i] = 0
         for l in lbls:
             dic[l] += 1
-        # split point
-        split_count = scores.shape[0] * (1 - split)
-        cum_sum = 0
-        for i in range(lbls.max() + 1):
-            if cum_sum + dic[i] > split_count:
-                split_cls = i  # included in majority
-                break
-            else:
-                cum_sum = cum_sum + dic[i]
+        if borders is None and isinstance(split, float):
+            # split point
+            split_count = scores.shape[0] * (1 - split)
+            cum_sum = 0
+            for i in range(lbls.max() + 1):
+                if cum_sum + dic[i] > split_count:
+                    split_cls = i  # included in majority
+                    break
+                else:
+                    cum_sum = cum_sum + dic[i]
+        else:
+            assert borders is not None
+            split_cls = borders
+            import pdb; pdb.set_trace()
         lbls = np.where(lbls <= split_cls, 0, lbls)
         lbls = np.where(lbls > split_cls, 1, lbls)
         dic_ = {}
@@ -155,6 +160,7 @@ class NodeTypeDatasetKalman(data.Dataset):
         self.class_weights = class_weights
         self.kalman_classes = lbls
         self.class_count_dict = dic_
+        self.borders = borders
 
     def rebalance_bins_multi(self, stack_right):
         # TODO Use 1 spaced clusters
@@ -291,6 +297,7 @@ class NodeTypeDatasetKalman(data.Dataset):
             class_clusters.append(current_list)  # incluse
             for c in range(3):
                 lbls = np.where((lbls <= class_clusters[c][-1]) & (lbls >= class_clusters[c][0]), c, lbls)
+            import pdb; pdb.set_trace()
         # Calculating class values counts after sorting
         dic_ = {}
         for i in range(lbls.max() + 1):
