@@ -689,6 +689,7 @@ class MultiHypothesisNet(object):
     def preprocess_edge(self, node_history_st, edge_type, neighbors, neighbors_edge_value):
         max_hl = self.hyperparams['maximum_history_length']
         edge_states_list = list()  # list of [#of neighbors, max_ht, state_dim]
+        # import pdb; pdb.set_trace()
         # Get neighbors for timestep in batch
         for i, neighbor_states in enumerate(neighbors):
             if len(neighbor_states) == 0:  # There are no neighbors for edge type # TODO necessary?
@@ -873,8 +874,10 @@ class MultiHypothesisNet(object):
         initial_mu_model = self.node_modules[self.node_type + '/decoder/initial_mu']
         logits_model = self.node_modules[self.node_type + '/decoder/kalman_logits']
         con_model = self.node_modules[self.node_type + '/con_head']
-        initial_h = F.relu(initial_h_model(x))
-        initial_mu = F.relu(initial_mu_model(n_s_t0))
+        initial_h = initial_h_model(x)
+        initial_mu = initial_mu_model(n_s_t0)
+        # initial_h = F.relu(initial_h_model(x))
+        # initial_mu = F.relu(initial_mu_model(n_s_t0))
 
         if self.hyperparams['incl_robot_node']:
             input_ = torch.cat([x, initial_mu, x_nr_t], dim=1)

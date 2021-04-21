@@ -229,9 +229,12 @@ def make_step(grad, attack, step_size):
     return step
 
 
-def random_perturb(inputs, attack, eps):
+def random_perturb(inputs, attack, eps=0.5, std=0.1):
     if attack == 'inf':
         r_inputs = 2 * (torch.rand_like(inputs) - 0.5) * eps
+    elif attack == 'normal':
+        # r_inputs = torch.normal(0, 0.1, size=inputs.shape)
+        r_inputs = std * torch.randn(size=inputs.shape)
     else:
         r_inputs = (torch.rand_like(inputs) - 0.5).renorm(p=2, dim=1, maxnorm=eps)
     return r_inputs
@@ -468,10 +471,14 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         # Add random noise to node states
         # random_noise = random_perturb(x_st_t_o, 'l2', 0.5)
         # x_st_t_o = torch.clamp(x_st_t_o + random_noise, 0, 1)
-        random_noise = random_perturb(x_st_t, 'l2', 0.5)
+        # random_noise = random_perturb(x_st_t, 'l2', 0.5)
+        random_noise = random_perturb(x_st_t, 'normal').to(device)
+        # import pdb; pdb.set_trace()
         x_st_t = torch.clamp(x_st_t + random_noise, 0, 1)
+        # import pdb; pdb.set_trace()
         for i in range(len(combined_neighbors)):
-            random_noise = random_perturb(combined_neighbors[i], 'l2', 0.5)
+            # random_noise = random_perturb(combined_neighbors[i], 'l2', 0.5)
+            random_noise = random_perturb(combined_neighbors[i], 'normal').to(device)
             combined_neighbors[i] = torch.clamp(combined_neighbors[i] + random_noise, 0, 1)
     initial_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
     initial_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
@@ -507,7 +514,7 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         for i in range(len(combined_neighbors)):
             combined_neighbors[i] = combined_neighbors[i] - make_step(grad_neighbors[i], 'l2', step_size)
             combined_neighbors[i] = torch.clamp(combined_neighbors[i], 0, 1)
-        
+    # import pdb; pdb.set_trace()
     # Weights of the network remain unchanged
     after_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
     after_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
@@ -737,6 +744,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             lr_scheduler[node_type].step()
         # Saving generated data
         if num_gen > 0:
+            print("Generated data !")
             # Concatenate inputs
             gen_o = torch.cat(gen_outs, dim=0)
             gen_i = cat_inputs(gen_ins)

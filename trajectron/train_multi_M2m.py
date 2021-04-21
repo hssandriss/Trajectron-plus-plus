@@ -118,7 +118,7 @@ if __name__ == '__main__':
         model_dir_g = os.path.join(args.log_dir, args.experiment, model_tag)
         checkpoint_name = 'model_registrar-%d-%s.pt' % (args.net_g_ts, args.net_g_extra_tag)
         copyfile(os.path.join(model_dir_g, checkpoint_name), os.path.join(model_dir_f, checkpoint_name))
-    if not args.debug: 
+    if not args.debug:
         # Create the log and model directiory if they're not present.
         if not args.gen:
             model_dir = os.path.join(args.log_dir, args.experiment, model_tag)
@@ -151,7 +151,7 @@ if __name__ == '__main__':
 
     train_scenes = train_env.scenes
     train_scenes_sample_probs = train_env.scenes_freq_mult_prop if args.scene_freq_mult_train else None
-    
+
     train_dataset = EnvironmentDatasetKalman(train_env,
                                              scores_path,
                                              hyperparams['state'],
@@ -168,13 +168,13 @@ if __name__ == '__main__':
     hyperparams['class_weights'] = train_dataset.class_weights[0]
     hyperparams['num_classes'] = len(hyperparams['class_count_dic'])
     # TODO Read these values from command line args
-    hyperparams['beta'] = 0.999  # (0.9, 0.99, 0.999) Lower -> bigger p accept
+    hyperparams['beta'] = 0.9  # (0.9, 0.99, 0.999) Lower -> bigger p accept
     # lower acceptance bound on logit for g: L(g;x*,k)
     hyperparams['gamma'] = 0.8  # (0.9, 0.99) Lower -> bigger p accept
     hyperparams['lam'] = 0.1  # (0.01, 0.1, 0.5) Lower -> bigger p accept
     hyperparams['step_size'] = 0.1
     hyperparams['attack_iter'] = 10
-    hyperparams['non_linearity'] = 'relu'
+    hyperparams['non_linearity'] = 'none'
     hyperparams['data_loader_sampler'] = 'random'
     # hyperparams['learning_rate_style'] = 'cosannw'
     # hyperparams['learning_rate'] = 0.01  # Override lr
@@ -215,7 +215,7 @@ if __name__ == '__main__':
 
         eval_scenes = eval_env.scenes
         eval_scenes_sample_probs = eval_env.scenes_freq_mult_prop if args.scene_freq_mult_eval else None
-        
+
         eval_dataset = EnvironmentDatasetKalman(eval_env,
                                                 scores_path,
                                                 hyperparams['state'],
@@ -227,7 +227,7 @@ if __name__ == '__main__':
                                                 min_future_timesteps=hyperparams['prediction_horizon'],
                                                 return_robot=not args.incl_robot_node,
                                                 borders=train_dataset.boarders[0])
-        
+
         eval_data_loader = dict()
         for node_type_data_set in eval_dataset:
             node_type_dataloader = utils.data.DataLoader(node_type_data_set,
@@ -326,12 +326,15 @@ if __name__ == '__main__':
     weight = hyperparams['class_weights'].to(args.device)
     criterion_2 = nn.CrossEntropyLoss(reduction='none')
     criterion_1 = ScoreBasedConLoss()  # Use criterion_1._get_name() to get the name of the loss
+    # with open(f'{model_dir}/config_{extra_tag}.json', 'w') as fout:
+    #     json.dump(hyperparams, fout)
     # criterion_1 = FocalLoss(weight=weight, gamma=0.5, reduction='none')
     # criterion = LDAMLoss(cls_num_list=hyperparams['class_count'], max_m=0.5, s=30, reduction='none').cuda()
     # criterion_2 = SupervisedConLoss(hyperparams['num_classes'])
     #################################
     #           TRAINING            #
     #################################
+
     print("\n" + bcolors.UNDERLINE + "Trained Model Extra_Tag:" + bcolors.ENDC)
     print(bcolors.OKGREEN + extra_tag + bcolors.ENDC)
     print(bcolors.UNDERLINE + "Class Count:" + bcolors.ENDC)
@@ -356,14 +359,15 @@ if __name__ == '__main__':
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
             print("**** Train Epoch without generation ****")
-            # if epoch <= 200:
+            # if epoch <= 300:
             #     epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
             #                                              criterion_1, train_data_loader, epoch, hyperparams, log_writer, args.device)
             # else:
             class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
-                                                    criterion_2, train_data_loader, epoch, hyperparams, log_writer, args.device)
-        if epoch >= 100:
-            criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
+                                                criterion_2, train_data_loader, epoch, hyperparams, log_writer,
+                                                args.device)
+        # if epoch >= 450:
+        #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
             # Use now weighted sampler
             # train_data_loader = dict()
             # for node_type_data_set in train_dataset:
@@ -382,7 +386,6 @@ if __name__ == '__main__':
                                eval_data_loader=eval_data_loader, epoch=epoch,
                                eval_device=args.device, log_writer=log_writer)
 
-
         train_dataset.augment = False
         cls_accuracies.append({"epoch": epoch, "accuracy per class": class_acc})
         cls_losses.append({"epoch": epoch, "loss per class": class_loss})
@@ -397,18 +400,3 @@ if __name__ == '__main__':
                 json.dump(cls_generated, fout)
             with open(f'{model_dir}/losses_{extra_tag}.json', 'w') as fout:
                 json.dump(losses, fout)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-

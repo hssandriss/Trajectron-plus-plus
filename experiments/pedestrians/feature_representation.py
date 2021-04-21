@@ -397,8 +397,8 @@ if __name__ == "__main__":
         print('Kalman (FDE): %.2f' % (np.mean(kalman_errors)))
         assert feat.shape[0] == kalman_errors.shape[0]
         # kalman_classes, class_count_dict = rebalance_bins(kalman_errors, stack_right=0.007, pred_num_classes=None)
-        # kalman_classes, class_count_dict, borders = rebalance_3_bins(kalman_errors)
-        kalman_classes, class_count_dict, border = rebalance_bins_binary(kalman_errors)
+        kalman_classes, class_count_dict, borders = rebalance_3_bins(kalman_errors)
+        # kalman_classes, class_count_dict, border = rebalance_bins_binary(kalman_errors)
         assert kalman_classes.shape[0] == feat.shape[0]
         num_classes = len(class_count_dict)
         # Subsampling from the training data
