@@ -174,7 +174,7 @@ if __name__ == '__main__':
     hyperparams['lam'] = 0.1  # (0.01, 0.1, 0.5) Lower -> bigger p accept
     hyperparams['step_size'] = 0.1
     hyperparams['attack_iter'] = 10
-    hyperparams['non_linearity'] = 'none'
+    hyperparams['non_linearity'] = 'relu'
     hyperparams['data_loader_sampler'] = 'random'
     # hyperparams['learning_rate_style'] = 'cosannw'
     # hyperparams['learning_rate'] = 0.01  # Override lr
@@ -359,15 +359,15 @@ if __name__ == '__main__':
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
             print("**** Train Epoch without generation ****")
-            # if epoch <= 300:
-            #     epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
-            #                                              criterion_1, train_data_loader, epoch, hyperparams, log_writer, args.device)
-            # else:
-            class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
+            if epoch <= 400:
+                epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
+                                                         criterion_1, train_data_loader, epoch, hyperparams, log_writer, args.device)
+            else:
+                class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
                                                 criterion_2, train_data_loader, epoch, hyperparams, log_writer,
                                                 args.device)
-        # if epoch >= 450:
-        #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
+        if epoch >= 475:
+            criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
             # Use now weighted sampler
             # train_data_loader = dict()
             # for node_type_data_set in train_dataset:

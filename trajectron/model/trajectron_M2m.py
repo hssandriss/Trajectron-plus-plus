@@ -71,7 +71,7 @@ class Trajectron(object):
                 preprocessed_edges[edge_type] = [joint_history, combined_edge_masks]
         return (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
 
-    def encoded_x(self, batch, node_type, mode):
+    def encoded_x(self, batch, node_type, mode, no_grad=False):
         """
         Returns:
             - x: Encoded input / condition tensor to the CVAE x_e.
@@ -92,18 +92,30 @@ class Trajectron(object):
         if type(map) == torch.Tensor:
             map = map.to(self.device)
         model = self.node_models_dict[node_type]
-
-        x, n_s_t0, x_nr_t = model.obtain_encoded_tensors_(mode=mode,
-                                                          inputs=x,
-                                                          inputs_st=x_st_t,
-                                                          labels=y,
-                                                          labels_st=y_st_t,
-                                                          first_history_indices=first_history_index,
-                                                          #   neighbors=restore(neighbors_data_st),
-                                                          #   neighbors_edge_value=restore(neighbors_edge_value),
-                                                          preprocessed_edges=preprocessed_edges,
-                                                          robot=robot_traj_st_t,
-                                                          map=map)
+        if no_grad:
+            x, n_s_t0, x_nr_t = model.obtain_encoded_tensors_no_grad(mode=ModeKeys.EVAL,
+                                                                     inputs=x,
+                                                                     inputs_st=x_st_t,
+                                                                     labels=y,
+                                                                     labels_st=y_st_t,
+                                                                     first_history_indices=first_history_index,
+                                                                     #   neighbors=restore(neighbors_data_st),
+                                                                     #   neighbors_edge_value=restore(neighbors_edge_value),
+                                                                     preprocessed_edges=preprocessed_edges,
+                                                                     robot=robot_traj_st_t,
+                                                                     map=map)
+        else:
+            x, n_s_t0, x_nr_t = model.obtain_encoded_tensors_(mode=mode,
+                                                              inputs=x,
+                                                              inputs_st=x_st_t,
+                                                              labels=y,
+                                                              labels_st=y_st_t,
+                                                              first_history_indices=first_history_index,
+                                                              #   neighbors=restore(neighbors_data_st),
+                                                              #   neighbors_edge_value=restore(neighbors_edge_value),
+                                                              preprocessed_edges=preprocessed_edges,
+                                                              robot=robot_traj_st_t,
+                                                              map=map)
         return (x, n_s_t0, x_nr_t)
 
     def predict_kalman_class(self, x, n_s_t0, x_nr_t, node_type, normalize_weights=True):
@@ -116,9 +128,11 @@ class Trajectron(object):
         logits, features = model.predict_kalman_class(x, n_s_t0, x_nr_t)
         return logits, features
 
-    def predict(self, batch, node_type, mode):
-        x, n_s_t0, x_nr_t = self.encoded_x(batch, node_type, mode)
-        if mode == ModeKeys.TRAIN:
+    def predict(self, batch, node_type, mode, no_grad=False):
+        x, n_s_t0, x_nr_t = self.encoded_x(batch, node_type, mode, no_grad)
+        if mode == ModeKeys.TRAIN and no_grad:
+            assert x.is_leaf == True, "You are backpropagating on the encoder"
+        elif mode == ModeKeys.TRAIN and not no_grad:
             assert x.is_leaf == False, "You are not backpropagating on the encoder"
         logits, features = self.predict_kalman_class(x, n_s_t0, x_nr_t, node_type, normalize_weights=False)
         return logits, features

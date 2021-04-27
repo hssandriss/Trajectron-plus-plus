@@ -55,7 +55,7 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
             # inputs_shape =[x[i].shape for i in range(5)]
             # some inputs have nan values in x_st_t (inputs[3]) torch.isnan(inputs[3]).sum(2).sum(1).nonzero()
             inputs = trajectron.preprocess_edges(inputs, node_type)
-            y_hat, features = trajectron.predict(inputs, node_type, mode=ModeKeys.TRAIN)
+            y_hat, features = trajectron.predict(inputs, node_type, mode=ModeKeys.TRAIN, no_grad=False)
             # if torch.isnan(y_hat).nonzero().sum() > 0:
             #     import pdb; pdb.set_trace()
             train_loss = criterion(y_hat, targets)
@@ -183,7 +183,7 @@ def train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_s
             scores = batch[-1]
             scores = scores.to(device)
             inputs = trajectron.preprocess_edges(inputs, node_type)
-            _, features = trajectron.predict(inputs, node_type, mode=ModeKeys.TRAIN)
+            _, features = trajectron.predict(inputs, node_type, mode=ModeKeys.TRAIN, no_grad=True)
             train_loss, mask_pos, mask_neg = criterion(features, scores)
             pbar.set_description(
                 f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f} Positives: {mask_pos.item():.2f}: Negatives: {mask_neg.item():.2f} ")
