@@ -14,6 +14,8 @@ import pathlib
 import matplotlib.pyplot as plt
 import matplotlib.patheffects as pe
 
+from model.trajectron_M2m import Trajectron
+
 # warnings.filterwarnings("ignore", category=UserWarning)
 
 # TODO Build an evaluation function that computes the accuracy classwise
@@ -31,14 +33,16 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 
-def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
-                train_data_loader, epoch, hyperparams, log_writer, device):
+def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion, coef,
+                train_data_loader, epoch, top_n, hyperparams, log_writer, device):
 
     trajectron.model_registrar.train()
 
+    horizon = hyperparams['prediction_horizon']
+
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
-        loss_epoch = []
+        loss_epoch = {"classification": [], "regression": [], "joint": []}
         correct_epoch = 0
         class_loss = {k: [] for k in hyperparams['class_count_dic'].keys()}
         class_correct = {k: 0 for k in hyperparams['class_count_dic'].keys()}
@@ -51,17 +55,22 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
             optimizer[node_type].zero_grad()
             inputs = batch[:-2]
             targets = batch[-2]
+            regression_gt = inputs[2].to(device)
             targets = targets.to(device)
             # inputs_shape =[x[i].shape for i in range(5)]
             # some inputs have nan values in x_st_t (inputs[3]) torch.isnan(inputs[3]).sum(2).sum(1).nonzero()
             inputs = trajectron.preprocess_edges(inputs, node_type)
-            y_hat, features = trajectron.predict(inputs, node_type, mode=ModeKeys.TRAIN)
+            y_hat, hypothesis, features = trajectron.predict(inputs, horizon, node_type, mode=ModeKeys.TRAIN)
             # if torch.isnan(y_hat).nonzero().sum() > 0:
             #     import pdb; pdb.set_trace()
             train_loss = criterion(y_hat, targets)
+            classification_loss = train_loss.mean()
+            regression_loss = trajectron.regression_loss(node_type, regression_gt, hypothesis, top_n)
+            joint_loss = classification_loss * coef + regression_loss
+
             pbar.set_description(
-                f"Epoch {epoch}, {node_type} L: {train_loss.mean().item():.2f} (log10: {train_loss.mean().log10().item():.2f})")
-            train_loss.mean().backward()
+                f"Epoch {epoch}, {node_type}, C-L: {classification_loss.item():.2f}, R-L: {regression_loss.item():.2f}, J-L: {joint_loss.item():.2f}")
+            joint_loss.backward()
             # Clipping gradients.
             if hyperparams['grad_clip'] is not None:
                 nn.utils.clip_grad_value_(trajectron.model_registrar.parameters(), hyperparams['grad_clip'])
@@ -69,7 +78,10 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
             # Stepping forward the learning rate scheduler and annealers.
             # Per class metrics
             predicted = torch.argmax(F.softmax(y_hat, 1), 1)
-            loss_epoch.append(train_loss.clone().detach())  # [[bs, 1], [bs, 1]...]
+            loss_epoch["classification"].append(classification_loss.clone().detach().unsqueeze(0))  # [[bs, 1], [bs, 1]...]
+            loss_epoch["regression"].append(regression_loss.clone().detach().unsqueeze(0))  # [[bs, 1], [bs, 1]...]
+            loss_epoch["joint"].append(joint_loss.clone().detach().unsqueeze(0))  # [[bs, 1], [bs, 1]...]
+
             correct_epoch += (predicted == targets).sum().item()
             for k in hyperparams['class_count_dic'].keys():
                 k_idx = (targets == k)
@@ -87,12 +99,16 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
             lr_scheduler[node_type].step()
         curr_iter_node_type[node_type] = curr_iter
         # Logging
-        loss = torch.cat(loss_epoch)
+        loss = {}
+        for k in loss_epoch.keys():
+            loss[k] = torch.cat(loss_epoch[k])
         assert class_count_sampled == hyperparams['class_count_dic'], "You didn't go through all data"
-        log_writer.add_scalar(f"{node_type}/classification/train/loss", loss.mean().log10().item(), epoch)
-        log_writer.add_scalar(f"{node_type}/classification/train/loss_logarithmic", loss.mean().item(), epoch)
+        log_writer.add_scalar(f"{node_type}/classification/train/loss", loss["classification"].mean().log10().item(), epoch)
+        log_writer.add_scalar(f"{node_type}/classification/train/loss_logarithmic", loss["classification"].mean().item(), epoch)
         log_writer.add_scalar(f"{node_type}/classification/train/accuracy",
                               correct_epoch / data_loader.dataset.len, epoch)
+        log_writer.add_scalar(f"{node_type}/regression/train/loss", loss["regression"].mean().item(), epoch)
+        log_writer.add_scalar(f"{node_type}/joint_training/train/loss", loss["joint"].mean().item(), epoch)
 
         ret_class_acc = {k: class_correct[k] / hyperparams['class_count_dic'][k]
                          for k in hyperparams['class_count_dic'].keys()}
@@ -106,7 +122,12 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
                                   ret_class_loss_log[k], epoch)
             log_writer.add_scalar(f"{node_type}/classification/train/accuracy_class_{k}", ret_class_acc[k], epoch)
 
-        print("Epoch Loss: " + bcolors.OKGREEN + str(round(loss.mean().item(), 3)) + " (" + str(round(loss.mean().log10().item(), 3)) + ")" + bcolors.ENDC)
+        print("Epoch Joint Loss: " + bcolors.OKGREEN + str(round(loss["joint"].mean().item(), 3)
+                                                           ) + bcolors.ENDC)
+        print("Epoch Regression Loss: " + bcolors.OKGREEN + str(round(loss["regression"].mean().item(), 3)
+                                                                ) + bcolors.ENDC)
+        print("Epoch Classification Loss: " + bcolors.OKGREEN + str(round(loss["classification"].mean().item(), 3)
+                                                                    ) + " (" + str(round(loss["classification"].mean().log10().item(), 3)) + ")" + bcolors.ENDC)
         print("Epoch Accuracy: " + bcolors.OKGREEN + str(round(correct_epoch / data_loader.dataset.len, 3)) + bcolors.ENDC)
         print("Accuracy per class: ")
         print(bcolors.OKGREEN + str({k: round(ret_class_acc[k], 3)
@@ -161,12 +182,13 @@ def train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, cr
     return np.mean(loss_epoch)
 
 
-def train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
-                                train_data_loader, epoch, hyperparams, log_writer, device):
+def train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion, coef,
+                                train_data_loader, epoch, top_n, hyperparams, log_writer, device):
     """
     Training with contrastive loss (discriminate features using score value)
     """
     trajectron.model_registrar.train()
+    horizon = hyperparams['prediction_horizon']
 
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
@@ -181,12 +203,19 @@ def train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_s
             optimizer[node_type].zero_grad()
             inputs = batch[:-2]
             scores = batch[-1]
+            regression_gt = inputs[2].to(device)
             scores = scores.to(device)
+
             inputs = trajectron.preprocess_edges(inputs, node_type)
-            _, features = trajectron.predict(inputs, node_type, mode=ModeKeys.TRAIN)
+            _, hypothesis, features = trajectron.predict(inputs, horizon, node_type, mode=ModeKeys.TRAIN)
+
             train_loss, mask_pos, mask_neg = criterion(features, scores)
+            con_loss = train_loss.mean()
+            regression_loss = trajectron.regression_loss(node_type, regression_gt, hypothesis, top_n)
+            joint_loss = con_loss * coef + regression_loss
             pbar.set_description(
-                f"Epoch {epoch}, {node_type} L: {train_loss.item():.2f} Positives: {mask_pos.item():.2f}: Negatives: {mask_neg.item():.2f} ")
+                f"Epoch {epoch}, {node_type} C-L: {con_loss.item():.2f} <= (P: {mask_pos.item():.2f}: N: {mask_neg.item():.2f}), R-L: {regression_loss.item():.2f}, J-L: {joint_loss.item():.2f}")
+            import pdb; pdb.set_trace()
             # train_loss.register_hook(lambda grad: print(grad))
             train_loss.backward()
             # Clipping gradients.
@@ -245,7 +274,7 @@ def sum_tensor(tensor):
 
 
 def filter_unreliable(trajectron_g, node_type, threshold, seed_targets, seed_inputs):
-    outputs_g, _ = trajectron_g.predict(seed_inputs, node_type, mode=ModeKeys.EVAL)
+    outputs_g, _, _ = trajectron_g.predict(seed_inputs, 1, node_type, mode=ModeKeys.EVAL)
     one_hot = torch.zeros_like(outputs_g)
     one_hot.scatter_(1, seed_targets.view(-1, 1), 1)
     probs_g = torch.softmax(outputs_g, dim=1)[one_hot.to(torch.bool)]
@@ -390,14 +419,15 @@ def select_from_batch_input(input, select_idx):
     return ret
 
 
-def validation_metrics(model, criterion, eval_data_loader, epoch, eval_device, log_writer):
-    # model.model_registrar = model.model_registrar.to(eval_device)
+def validation_metrics(model, criterion, eval_data_loader, epoch, eval_device, hyperparams, log_writer):
+    model.model_registrar.eval()
+    horizon = hyperparams['prediction_horizon']
     with torch.no_grad():
         loss = {}
         accuracy = {}
         # Calculate evaluation loss
         for node_type, data_loader in eval_data_loader.items():
-            eval_loss = []
+            eval_loss ={ "regression":[], "classification":[]}
             correct = 0
             num_samples = 0
             print(f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
@@ -406,25 +436,29 @@ def validation_metrics(model, criterion, eval_data_loader, epoch, eval_device, l
                 inputs = batch[:-2]
                 targets = batch[-2]
                 targets = targets.to(eval_device)
-
+                regression_gt = inputs[2].to(eval_device)
                 inputs = model.preprocess_edges(inputs, node_type)
                 inputs = input_to_device(inputs, eval_device)
-                # import pdb; pdb.set_trace()
-                y_hat, _ = model.predict(inputs, node_type, mode=ModeKeys.EVAL)
-                curr_loss = criterion(y_hat, targets)
-                eval_loss.append(curr_loss.mean().item())
+                y_hat, hypothesis, _ = model.predict(inputs, horizon, node_type, mode=ModeKeys.EVAL)
+                curr_closs = criterion(y_hat, targets).mean()
+                curr_rloss = model.regression_loss(node_type, regression_gt, hypothesis, top_n=1)
+                eval_loss["classification"].append(curr_closs.item())
+                eval_loss["regression"].append(curr_rloss.item())
                 predicted = torch.argmax(F.softmax(y_hat, 1), 1)
                 num_samples += targets.shape[0]
-                # import pdb; pdb.set_trace()
                 correct += (predicted == targets).sum().item()
-                pbar.set_description(f"Epoch {epoch}, {node_type} L: {curr_loss.mean().item():.2f}, Acc: {(correct/num_samples):.2f}")
+                pbar.set_description(
+                    f"Epoch {epoch}, {node_type} C-L: {curr_closs:.2f}, Acc: {(correct/num_samples):.2f}, R-L: {curr_rloss:.2f} ")
                 del batch
-            loss[node_type] = round(np.mean(eval_loss), 3)
+            loss[node_type] = {k: round(np.mean(eval_loss[k]), 3) for k in eval_loss.keys()}
             accuracy[node_type] = round(np.sum(correct) / num_samples, 3)
-            log_writer.add_scalar(f"{node_type}/classification/validation/loss", loss[node_type], epoch)
             log_writer.add_scalar(f"{node_type}/classification/validation/accuracy", accuracy[node_type], epoch)
-            print(f"Loss: {loss[node_type]}, Accuracy {accuracy[node_type]}")
+            log_writer.add_scalar(f"{node_type}/classification/validation/classification_loss", loss[node_type]["classification"], epoch)
+            log_writer.add_scalar(f"{node_type}/classification/validation/regression_loss", loss[node_type]["regression"], epoch)
+            print(f"C-L: {loss[node_type]['classification']}, Accuracy {accuracy[node_type]}, R-L: {loss[node_type]['regression']}")
+    # import pdb; pdb.set_trace()
     return loss, accuracy
+
 
 def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets, p_accept,
                gamma, lam, step_size, random_start=True, max_iter=10):
@@ -464,7 +498,7 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
     edge_keys = list(preprocessed_edges.keys())
     edge_masks = [preprocessed_edges[k][1] for k in preprocessed_edges.keys()]
     combined_neighbors = [preprocessed_edges[k][0][:, :, :6] for k in preprocessed_edges.keys()]  # [bs, hist_len, state]
-    
+
     # Random Noise
     if random_start:
         # Verify the shapes of the noise
@@ -495,16 +529,17 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         preprocessed_edges = dict(zip(edge_keys, edge_values))
         inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
         # Calculating the objective
-        outputs_g, _ = trajectron_g.predict(inputs, node_type, mode=ModeKeys.EVAL)
-        outputs_r, _ = trajectron.predict(inputs, node_type, mode=ModeKeys.EVAL)
+        outputs_g, _, _ = trajectron_g.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
+        outputs_r, _, _ = trajectron.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
+
         loss = criterion(outputs_g, gen_targets) + lam * classwise_loss(outputs_r, seed_targets)
         # Calculate grad with respect to each part of the input: x, n_s_t0, x_nr_t
-        
+
         grad_vals = torch.autograd.grad(loss, [x_st_t, *combined_neighbors])
-        
+
         grad_x_st_t = grad_vals[0]
         grad_neighbors = grad_vals[1:]
-        
+
         # x_st_t_o = x_st_t_o - make_step(grad_x_st_t, 'l2', step_size)
         # x_st_t_o = torch.clamp(x_st_t_o, 0, 1)
 
@@ -525,11 +560,11 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
     edge_values = [[joint_histories[i], edge_masks[i]] for i in range(len(edge_masks))]
     preprocessed_edges = dict(zip(edge_keys, edge_values))
     inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
-    
+
     # inputs = (first_history_index.to(device), x_t.to(device), y_t.to(device), x_st_t.to(device), y_st_t.to(device), preprocessed_edges, robot_traj_st_t, map)
     inputs = detach_batch_input(inputs)
     # Inputs now has the new values (verified)
-    outputs_g, _ = trajectron_g.predict(inputs, node_type, mode=ModeKeys.EVAL)
+    outputs_g, _, _ = trajectron_g.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
     one_hot = torch.zeros_like(outputs_g)
     one_hot.scatter_(1, gen_targets.view(-1, 1), 1)
     probs_g = torch.softmax(outputs_g, dim=1)[one_hot.to(torch.bool)]
@@ -538,12 +573,15 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
 
     torch.backends.cudnn.enabled = True
     trajectron.model_registrar.train()
-    
+
     return inputs, correct
 
 
-def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs_orig_tuple,
-              targets_orig, gen_idx, gen_targets, hyperparams, device):
+def train_net(trajectron, trajectron_g, node_type, criterion, coef, optimizer, lr_scheduler, inputs_orig_tuple,
+              targets_orig, gen_idx, gen_targets, top_n, hyperparams, device):
+
+    horizon = hyperparams['prediction_horizon']
+
     class_gen_batch = {k: 0 for k in hyperparams['class_count_dic'].keys()}
     class_loss_batch = {k: 0 for k in hyperparams['class_count_dic'].keys()}
     class_acc_batch = {k: 0 for k in hyperparams['class_count_dic'].keys()}
@@ -576,7 +614,7 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     seed_targets = targets_orig[select_idx]
     # seed_inputs = inputs_orig_tuple[select_idx]
     seed_inputs = select_from_batch_input(inputs_tuple, select_idx)
-    
+
     # ! Now we have sampled seed classes k0 of initial point x0 given gen_target class k.
     gen_inputs, correct_mask = generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets,
                                           p_accept, hyperparams['gamma'], hyperparams['lam'], hyperparams['step_size'], True, hyperparams['attack_iter'])
@@ -586,7 +624,7 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     num_others = batch_size - num_gen
     gen_c_idx = gen_idx[correct_mask]
     others_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
-    others_mask[gen_c_idx] = 0
+    others_mask[gen_c_idx] = 0  # can be used for computing regression loss
     others_idx = others_mask.nonzero().view(-1)
     # (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map) = inputs_tuple
     if num_gen > 0:
@@ -604,10 +642,16 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
     # inputs_tuple = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
     # ! Bare in mind that here we do not replace the seed targets but create new variants of gen_targets[correct_mask]
     # Normal training for a minibatch
+
+    regression_gt = inputs_tuple[2].to(device)
     optimizer[node_type].zero_grad()
-    y_hat, _ = trajectron.predict(inputs_tuple, node_type, mode=ModeKeys.TRAIN)
+    y_hat, hypothesis, _ = trajectron.predict(inputs_tuple, horizon, node_type, mode=ModeKeys.TRAIN)
+
     train_loss = criterion(y_hat, targets)
-    train_loss.mean().backward()
+    classification_loss = train_loss.mean()
+    regression_loss = trajectron.regression_loss(node_type, regression_gt[others_mask], hypothesis[others_mask], top_n)
+    joint_loss = classification_loss * coef + regression_loss
+    joint_loss.backward()
     # Clipping gradients.
     if hyperparams['grad_clip'] is not None:
         nn.utils.clip_grad_value_(trajectron.model_registrar.parameters(), hyperparams['grad_clip'])
@@ -670,11 +714,11 @@ def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_sche
         batch_orig_outputs = seed_targets[correct_mask]
         batch_gen_inputs = gen_inputs_c
         batch_gen_outputs = gen_targets_c
-    return oth_loss_total, gen_loss_total, num_others, num_correct_oth, num_gen, num_correct_gen, p_g_orig, p_g_targ, \
+    return classification_loss, regression_loss, joint_loss, oth_loss_total, gen_loss_total, num_others, num_correct_oth, num_gen, num_correct_gen, p_g_orig, p_g_targ, \
         success, class_gen_batch, class_loss_batch, class_acc_batch, batch_gen_inputs, batch_gen_outputs, batch_orig_inputs, batch_orig_outputs
 
 
-def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type, optimizer, lr_scheduler, criterion, coef,
                     train_data_loader, hyperparams, log_writer, save_gen_dir, device):
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(device)
@@ -695,6 +739,9 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
         class_gen = {k: [] for k in hyperparams['class_count_dic'].keys()}
         class_loss = {k: [] for k in hyperparams['class_count_dic'].keys()}
         class_acc = {k: [] for k in hyperparams['class_count_dic'].keys()}
+        loss_epoch = {"classification": [], "regression": [], "joint": []}
+        correct_epoch = 0
+
         gen_ins = []
         gen_outs = []
         orig_ins = []
@@ -714,12 +761,15 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             gen_index = gen_index.view(-1)
             gen_targets = targets[gen_index]
             original_count_stats = {k: (targets == k).sum().item() for k in range(hyperparams['num_classes'])}
-            t_loss, g_loss, num_others, num_correct, num_gen, num_gen_correct, p_g_orig_batch, p_g_targ_batch, success, class_gen_batch, class_loss_batch, class_acc_batch, gen_in, gen_out, orig_in, orig_out = train_net(
-                trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs, targets, gen_index, gen_targets, hyperparams, device)
+            classification_loss, regression_loss, joint_loss, t_loss, g_loss, num_others, num_correct, num_gen, num_gen_correct, p_g_orig_batch, p_g_targ_batch, success, class_gen_batch, class_loss_batch, class_acc_batch, gen_in, gen_out, orig_in, orig_out = train_net(
+                trajectron, trajectron_g, node_type, criterion, coef, optimizer, lr_scheduler, inputs, targets, gen_index, gen_targets, top_n, hyperparams, device)
             # Count for the modified batch
-            gen_stats_batch = {k: f"{class_gen_batch[k]}/{original_count_stats[k]}" for k in range(hyperparams['num_classes'])}
+            loss_epoch["classification"].append(classification_loss.unsqueeze(0))
+            loss_epoch["regression"].append(regression_loss.unsqueeze(0))
+            loss_epoch["joint"].append(joint_loss.unsqueeze(0))
+            gen_stats = " ".join([f"{k}: {class_gen_batch[k]}/{original_count_stats[k]}" for k in range(hyperparams['num_classes'])])
             pbar.set_description(
-                f"Epoch: {epoch}, {node_type}| Re-Generated: {str(gen_stats_batch)}| oth_loss: {t_loss/num_others+1e-6:.2f}| gen_loss: {g_loss/(num_gen+1e-6):.2f}")
+                f"Epoch: {epoch}, {node_type}, Gen: ({gen_stats}), C-L {classification_loss:.2f} (Oth: {t_loss/num_others+1e-6:.2f} - Gen: {g_loss/(num_gen+1e-6):.2f}), R-L: {regression_loss:.2f}), J-L: {joint_loss:.2f})")
             if gen_in is not None:
                 # to CPU in order to save memory
                 gen_ins.append(input_to_device(gen_in, 'cpu'))
@@ -739,6 +789,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             p_g_orig += p_g_orig_batch  # logits confidence on the original label
             p_g_targ += p_g_targ_batch  # logits confidence on the target label
             t_success += success
+            correct_epoch += correct_gen + correct_oth
             curr_iter += 1
             # Stepping forward the learning rate scheduler and annealers.
             lr_scheduler[node_type].step()
@@ -783,12 +834,21 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             'gen_acc': 100. * correct_gen / total_gen,
             'p_g_orig': p_g_orig / total_gen,
             'p_g_targ': p_g_targ / total_gen,
-            't_success': t_success
+            't_success': t_success,
+            'acc': correct_epoch / len(data_loader.dataset)
         }
+        # Logging
+        loss = {}
+        for k in loss_epoch.keys():
+            loss[k] = torch.cat(loss_epoch[k])
 
-        log_writer.add_scalar(f"{node_type}/classification_f/train/train_loss", oth_loss / total_oth, epoch)
+        log_writer.add_scalar(f"{node_type}/classification_f/train/regression_loss", loss["regression"].mean(), epoch)
+        log_writer.add_scalar(f"{node_type}/classification_f/train/classification_loss", loss["classification"].mean(), epoch)
+        log_writer.add_scalar(f"{node_type}/classification_f/train/joint_loss", loss["joint"].mean(), epoch)
+        log_writer.add_scalar(f"{node_type}/classification_f/train/oth_loss", oth_loss / total_oth, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/gen_loss", gen_loss / total_gen, epoch)
-        log_writer.add_scalar(f"{node_type}/classification_f/train/train_acc", 100. * correct_oth / total_oth, epoch)
+        log_writer.add_scalar(f"{node_type}/classification_f/train/train_acc", 100 * results[node_type]['acc'], epoch)
+        log_writer.add_scalar(f"{node_type}/classification_f/train/oth_acc", 100. * correct_oth / total_oth, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/gen_acc", 100. * correct_gen / total_gen, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/p_g_orig", p_g_orig / total_gen, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/p_g_targ", p_g_targ / total_gen, epoch)
@@ -809,6 +869,14 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
             log_writer.add_scalar(f"{node_type}/classification_f/train/gen_class_{k}", ret_class_gen[k], epoch)
 
         print(bcolors.OKGREEN + msg + bcolors.ENDC)
+        
+        print(bcolors.UNDERLINE + "Overall classification loss:" + bcolors.ENDC)
+        print(bcolors.OKBLUE + str(round(loss["classification"].mean().item(), 3)) + bcolors.ENDC)
+        print(bcolors.UNDERLINE + "Overall regression loss:" + bcolors.ENDC)
+        print(bcolors.OKBLUE + str(round(loss["regression"].mean().item(), 3)) + bcolors.ENDC)
+        print(bcolors.UNDERLINE + "Overall joint loss:" + bcolors.ENDC)
+        print(bcolors.OKBLUE + str(round(loss["joint"].mean().item(), 3)) + bcolors.ENDC)
+
         print(bcolors.UNDERLINE + "Class Gens:" + bcolors.ENDC)
         print(bcolors.OKBLUE + str(ret_class_gen) + bcolors.ENDC)
         print(bcolors.UNDERLINE + "Class Loss:" + bcolors.ENDC)
@@ -816,6 +884,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimi
         print(bcolors.UNDERLINE + "Class Acc:" + bcolors.ENDC)
         print(bcolors.OKBLUE + str(ret_class_acc) + bcolors.ENDC)
         print()
+        import pdb; pdb.set_trace()
 
     return results, ret_class_acc, ret_class_loss, ret_class_gen
 

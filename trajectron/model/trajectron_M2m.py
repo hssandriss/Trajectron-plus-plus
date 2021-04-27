@@ -106,19 +106,18 @@ class Trajectron(object):
                                                           map=map)
         return (x, n_s_t0, x_nr_t)
 
-    def predict_kalman_class(self, x, n_s_t0, x_nr_t, node_type, normalize_weights=True):
+    def predict_jointly(self, x, n_s_t0, x_nr_t, node_type, horizon):
         model = self.node_models_dict[node_type]
-        # Weight normalization
-        # if normalize_weights:
-        #     with torch.no_grad():
-        #         norm = torch.norm(model.node_modules[node_type + '/decoder/kalman_logits'].weight, dim=1, keepdim=True)
-        #         model.node_modules[node_type + '/decoder/kalman_logits'].weight.div_(norm)
-        logits, features = model.predict_kalman_class(x, n_s_t0, x_nr_t)
-        return logits, features
+        logits, hypothesis, features = model.predict(x, n_s_t0, x_nr_t, horizon)
+        return logits, hypothesis, features
 
-    def predict(self, batch, node_type, mode):
+    def predict(self, batch, horizon, node_type, mode):
         x, n_s_t0, x_nr_t = self.encoded_x(batch, node_type, mode)
         if mode == ModeKeys.TRAIN:
             assert x.is_leaf == False, "You are not backpropagating on the encoder"
-        logits, features = self.predict_kalman_class(x, n_s_t0, x_nr_t, node_type, normalize_weights=False)
-        return logits, features
+        logits, hypothesis, features = self.predict_jointly(x, n_s_t0, x_nr_t, node_type, horizon)
+        return logits, hypothesis, features
+
+    def regression_loss(self, node_type, gt, hypothesis, top_n):
+        model = self.node_models_dict[node_type]
+        return model.ewta(gt, hypothesis, top_n)

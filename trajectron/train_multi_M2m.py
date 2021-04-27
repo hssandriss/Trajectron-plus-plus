@@ -342,10 +342,14 @@ if __name__ == '__main__':
     curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
     # train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
     cls_generated, cls_accuracies, cls_losses, losses = [], [], [], []
+    top_n = hyperparams['num_hyp']
     start_at = 0
     if args.net_trajectron_ts:
         start_at = int(args.net_trajectron_ts)
     for epoch in range(start_at + 1, start_at + args.train_epochs + 1):
+        if epoch > 50 and epoch % 20 == 0:
+            top_n = max(top_n // 2, 1)
+        print(f"top n: {top_n}")
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
         class_acc = 0
@@ -354,37 +358,25 @@ if __name__ == '__main__':
         if epoch >= args.warm + 1 and args.gen:
             print("**** Train Epoch with generation ****")
             # Generation process and training with generated data
-            train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, curr_iter_node_type, optimizer, lr_scheduler,
-                                                                            criterion_2, train_data_loader, hyperparams, log_writer, save_gen_dir, args.device)
+            train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
+                                                                            100, train_data_loader, hyperparams, log_writer, save_gen_dir, args.device)
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
             print("**** Train Epoch without generation ****")
+            
             # if epoch <= 300:
-            #     epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
-            #                                              criterion_1, train_data_loader, epoch, hyperparams, log_writer, args.device)
+            # epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
+            #                                          100, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
             # else:
-            class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler,
-                                                criterion_2, train_data_loader, epoch, hyperparams, log_writer,
-                                                args.device)
+            class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
+                                                100, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
         # if epoch >= 450:
         #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
-            # Use now weighted sampler
-            # train_data_loader = dict()
-            # for node_type_data_set in train_dataset:
-            #     node_type_dataloader = utils.data.DataLoader(node_type_data_set,
-            #                                                     collate_fn=collate,
-            #                                                     pin_memory=False if args.device is 'cpu' else True,
-            #                                                     batch_size=args.batch_size,
-            #                                                     #  sampler=node_type_data_set.weighted_sampler,
-            #                                                     shuffle=True,
-            #                                                     num_workers=args.preprocess_workers)
-            #     train_data_loader[node_type_data_set.node_type] = node_type_dataloader
-            #     # reset lr scheduler
-            #     lr_scheduler[node_type_data_set.node_type].load_state_dict(initial_lr_state[node_type])
+        
         if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
             validation_metrics(model=trajectron, criterion=criterion_2,
                                eval_data_loader=eval_data_loader, epoch=epoch,
-                               eval_device=args.device, log_writer=log_writer)
+                               eval_device=args.device, log_writer=log_writer, hyperparams=hyperparams)
 
         train_dataset.augment = False
         cls_accuracies.append({"epoch": epoch, "accuracy per class": class_acc})

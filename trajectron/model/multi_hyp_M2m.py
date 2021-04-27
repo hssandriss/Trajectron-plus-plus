@@ -156,9 +156,9 @@ class MultiHypothesisNet(object):
             #              Map Encoder
             x_size += self.hyperparams['map_encoder'][self.node_type]['output_size']
 
-        ####################
-        #   Decoder LSTM   #
-        ####################
+        #################################
+        #   Classification & Features   #
+        #################################
 
         if self.hyperparams['incl_robot_node']:
             decoder_input_dims = self.pred_state_length + self.robot_state_length + x_size
@@ -175,6 +175,23 @@ class MultiHypothesisNet(object):
         self.add_submodule(self.node_type + '/con_head',
                            model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'] + decoder_input_dims,
                                                      self.hyperparams['dec_rnn_dim'] + decoder_input_dims))
+        
+        ####################
+        #   Decoder LSTM   #
+        ####################
+
+        if self.hyperparams['incl_robot_node']:
+            decoder_input_dims_reg = self.hyperparams['num_hyp'] * self.pred_state_length + self.robot_state_length + x_size
+        else:
+            decoder_input_dims_reg = self.hyperparams['num_hyp'] * self.pred_state_length + x_size
+
+        self.add_submodule(self.node_type + '/decoder/rnn_cell',
+                           model_if_absent=nn.GRUCell(decoder_input_dims_reg, self.hyperparams['dec_rnn_dim']))
+        
+        self.add_submodule(self.node_type + '/decoder/proj_to_mus',
+                           model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
+                                                     self.hyperparams['num_hyp'] * self.pred_state_length))
+        
         self.x_size = x_size
 
     def create_edge_models(self, edge_types):
@@ -698,7 +715,7 @@ class MultiHypothesisNet(object):
             else:
                 edge_states_list.append(torch.stack(neighbor_states, dim=0).to(self.device))
         # TODO This results => list of Bs tensors of shape [7, 8, 6]
-        
+
         if self.hyperparams['edge_state_combine_method'] == 'sum':
             # Used in Structural-RNN to combine edges as well.
             op_applied_edge_states_list = list()
@@ -869,27 +886,48 @@ class MultiHypothesisNet(object):
 
         return state
 
-    def decoder(self, x, n_s_t0, x_nr_t):
+    def decoder(self, x, n_s_t0, x_nr_t, horizon):
+
+        cell = self.node_modules[self.node_type + '/decoder/rnn_cell']
+        project_to_mus = self.node_modules[self.node_type + '/decoder/proj_to_mus']
         initial_h_model = self.node_modules[self.node_type + '/decoder/initial_h']
         initial_mu_model = self.node_modules[self.node_type + '/decoder/initial_mu']
         logits_model = self.node_modules[self.node_type + '/decoder/kalman_logits']
         con_model = self.node_modules[self.node_type + '/con_head']
+
         initial_h = initial_h_model(x)
         initial_mu = initial_mu_model(n_s_t0)
-        # initial_h = F.relu(initial_h_model(x))
-        # initial_mu = F.relu(initial_mu_model(n_s_t0))
 
         if self.hyperparams['incl_robot_node']:
-            input_ = torch.cat([x, initial_mu, x_nr_t], dim=1)
+            input_ = torch.cat([x, initial_mu.repeat(1, self.hyperparams['num_hyp']), x_nr_t], dim=1)
+            features = torch.cat([x, initial_mu, x_nr_t, initial_h], dim=1)
         else:
-            input_ = torch.cat([x, initial_mu], dim=1)
+            input_ = torch.cat([x, initial_mu.repeat(1, self.hyperparams['num_hyp'])], dim=1)
+            features = torch.cat([x, initial_mu, initial_h], dim=1)
 
-        features = torch.cat([input_, initial_h], dim=1)
         logits = logits_model(features)
         features = F.normalize(con_model(features), dim=1)
-        return logits, features
 
-    def predict_kalman_class(self, x, n_s_t0, x_nr_t):
+        h = initial_h
+        mus = []
+        #  import pdb; pdb.set_trace()
+        for t in range(horizon):
+            h_state = cell(input_, h)  # [bs, rnn_hidden_shape]
+            raw_mus = project_to_mus(h_state)
+            mu_x = raw_mus[:, self.hyperparams['num_hyp']:]
+            mu_y = raw_mus[:, :self.hyperparams['num_hyp']]
+            pred_mu = torch.stack([mu_x, mu_y], axis=2)  # [bs,num_hyp, 2]
+            mus.append(pred_mu)
+            if self.hyperparams['incl_robot_node']:
+                input_ = torch.cat([x, raw_mus, x_nr_t], dim=1)
+            else:
+                input_ = torch.cat([x, raw_mus], dim=1)
+            h = h_state
+        hypothesis = torch.stack(mus, dim=2)  # [bs, num_hyp, horizon, 2]
+        hypothesis = self.dynamic.integrate_samples(hypothesis, None)  # [bs, num_hyp, horizon, 2]
+        return logits, hypothesis, features
+
+    def predict(self, x, n_s_t0, x_nr_t, horizon):
         """
         Predicts the future of a batch of nodes.
 
@@ -905,5 +943,44 @@ class MultiHypothesisNet(object):
         :param num_samples: Number of samples from the latent space.
         :return:
         """
-        y_predicted, features = self.decoder(x, n_s_t0, x_nr_t)
-        return y_predicted, features
+        y_predicted, hypothesis, features = self.decoder(x, n_s_t0, x_nr_t, horizon)
+
+        return y_predicted, hypothesis, features
+
+    def wta(self, gt, hyp):
+        """
+        Calculates the WTA Loss
+        :param gt [bs, horizon, 2]
+        :param hyp [bs, n_hyp, horizon, 2]
+        """
+        eps = 0.001
+        # gt -> [bs, num_hyp, horizon, 2]
+        gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'], 1, 1)
+        dist = torch.sum((hyp - gt)**2, dim=3)  # [bs, num_hyp, horizon]
+        dist = torch.sqrt(dist + eps)  # [bs, num_hyp, horizon]
+        min_loss, _ = torch.min(dist, dim=1)  # [bs, horizon]
+        # sum over horizon and mean over batch
+        losses = torch.sum(min_loss, dim=1).mean(dim=0)
+        return losses
+
+    def ewta(self, gt, hyp, top_n=8):
+        """
+        Calculates the Evolved WTA Loss
+        :param gt [bs, horizon, 2]
+        :param hyp [bs, n_hyp, horizon, 2]
+        :param top_n initially num hyp (according to the paper)
+        """
+        sum_losses = 0.0
+        eps = 0.001
+        # gt -> [bs, num_hyp, horizon, 2]
+        gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'], 1, 1)
+        dist = torch.sum((hyp - gt)**2, dim=3)  # [bs, num_hyp, horizon]
+        dist = torch.sqrt(dist + eps)
+        # [bs, top_k, horizon]
+        min_loss, _ = torch.topk(dist, k=top_n, dim=1, largest=False, sorted=True)
+        for i in range(top_n):
+            # sum over the horizon of the trajectory of ith hyp
+            losses = torch.sum(min_loss[:, i, :], dim=1)
+            losses = losses.mean(dim=0)
+            sum_losses += losses
+        return sum_losses
