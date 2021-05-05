@@ -174,4 +174,35 @@ parser.add_argument('--save_every',
                     help='how often to save during training, never if None',
                     type=int,
                     default=1)
+
+# hyperparameters for multi LDAM
+parser.add_argument('--load_model',
+                    help='use pretrained model or not',
+                    type=str,
+                    default='no')
+# hyperparameters for multi LDAM
+parser.add_argument('--joint_train',
+                    help='Train jointly or just classification',
+                    type=str,
+                    default='yes')
+parser.add_argument('--contrastive',
+                    help='Train jointly or just classification',
+                    type=str,
+                    default='no')
+parser.add_argument('--weight_ldam',
+                    help='reweight LDAM or not',
+                    type=str,
+                    default='no')
+parser.add_argument('--factor_ldam',
+                    help='factor of LDAM loss',
+                    type=int,
+                    default=None)  
+parser.add_argument('--nb_bins',
+                    help='nb_bins for Group of Experts loss',
+                    type=int,
+                    default=4)      
+parser.add_argument('--fix_encoder',
+                    help='either fix the encoder weights or not',
+                    type=str,
+                    default='no')                
 args = parser.parse_args()

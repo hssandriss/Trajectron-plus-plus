@@ -1,11 +1,13 @@
 import warnings
+
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from environment.scene_graph import DirectedEdge
+
+import model.dynamics as dynamic_module
 from model.components import *
 from model.model_utils import *
-import model.dynamics as dynamic_module
-from environment.scene_graph import DirectedEdge
 
 
 class MultiHypothesisNet(object):
@@ -29,7 +31,8 @@ class MultiHypothesisNet(object):
         self.curr_iter = 0
         self.class_count_dict = class_count_dict
         self.nb_classes = len(self.class_count_dict[0])
-        self.criterion = LDAMLoss(cls_num_list= [*self.class_count_dict[0].values()])
+        self.criterion_ldam = LDAMLoss(cls_num_list= [*self.class_count_dict[0].values()])
+        self.criterion_con_scores = ScoreBasedConLoss()
 
         self.node_modules = dict()
 
@@ -168,15 +171,23 @@ class MultiHypothesisNet(object):
         if self.hyperparams['incl_robot_node']:
             decoder_input_dims = self.pred_state_length+ self.robot_state_length + z_size
         else:
-            decoder_input_dims = self.pred_state_length  + z_size
+            decoder_input_dims = 20 * self.pred_state_length  + z_size
 
-        
+        self.add_submodule(self.node_type + '/decoder/rnn_cell',
+                           model_if_absent=nn.GRUCell(decoder_input_dims, self.hyperparams['dec_rnn_dim']))
         self.add_submodule(self.node_type + '/decoder/initial_h',
                            model_if_absent=nn.Linear(z_size, self.hyperparams['dec_rnn_dim']))
         self.add_submodule(self.node_type + '/decoder/initial_mu',
                            model_if_absent=nn.Linear(self.state_length, self.pred_state_length))
         self.add_submodule(self.node_type + '/decoder/kalman_logits',
                            model_if_absent=NormedLinear(self.hyperparams['dec_rnn_dim'] + decoder_input_dims, self.nb_classes))
+        self.add_submodule(self.node_type + '/decoder/proj_to_mus',
+                           model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
+                                                     self.hyperparams['num_hyp'] * self.pred_state_length))
+        self.add_submodule(self.node_type + '/con_head',
+                           model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'] + decoder_input_dims,
+                                                     self.hyperparams['output_con_model']))
+        
         self.x_size = x_size
         self.z_size = z_size
 
@@ -324,7 +335,8 @@ class MultiHypothesisNet(object):
                                neighbors,
                                neighbors_edge_value,
                                robot,
-                               map) -> (torch.Tensor,
+                               map,
+                               fix_encoder = False) -> (torch.Tensor,
                                         torch.Tensor,
                                         torch.Tensor,
                                         torch.Tensor,
@@ -355,119 +367,234 @@ class MultiHypothesisNet(object):
             - y: Label / future of the node. (Ground truth)
             - n_s_t0: Standardized current state of the node.
         """
-        #with torch.no_grad():
-        x, x_r_t, y_e, y_r, y = None, None, None, None, None
-        initial_dynamics = dict()
+        if fix_encoder: 
+            with torch.no_grad():
+                x, x_r_t, y_e, y_r, y = None, None, None, None, None
+                initial_dynamics = dict()
 
-        batch_size = inputs.shape[0]
-        #########################################
-        # Provide basic information to encoders #
-        #########################################
-        node_history = inputs
-        node_present_state = inputs[:, -1]
-        node_pos = inputs[:, -1, 0:2]
-        node_vel = inputs[:, -1, 2:4]
+                batch_size = inputs.shape[0]
+                #########################################
+                # Provide basic information to encoders #
+                #########################################
+                node_history = inputs
+                node_present_state = inputs[:, -1]
+                node_pos = inputs[:, -1, 0:2]
+                node_vel = inputs[:, -1, 2:4]
 
-        node_history_st = inputs_st
-        node_present_state_st = inputs_st[:, -1]
-        node_pos_st = inputs_st[:, -1, 0:2]
-        node_vel_st = inputs_st[:, -1, 2:4]
+                node_history_st = inputs_st
+                node_present_state_st = inputs_st[:, -1]
+                node_pos_st = inputs_st[:, -1, 0:2]
+                node_vel_st = inputs_st[:, -1, 2:4]
 
-        n_s_t0 = node_present_state_st
+                n_s_t0 = node_present_state_st
 
-        initial_dynamics['pos'] = node_pos
-        initial_dynamics['vel'] = node_vel
+                initial_dynamics['pos'] = node_pos
+                initial_dynamics['vel'] = node_vel
 
-        self.dynamic.set_initial_condition(initial_dynamics)
+                self.dynamic.set_initial_condition(initial_dynamics)
 
-        if self.hyperparams['incl_robot_node']:
-            x_r_t, y_r = robot[..., 0, :], robot[..., 1:, :]
+                if self.hyperparams['incl_robot_node']:
+                    x_r_t, y_r = robot[..., 0, :], robot[..., 1:, :]
 
-        ##################
-        # Encode History #
-        ##################
-        node_history_encoded = self.encode_node_history(mode,
-                                                        node_history_st,
-                                                        first_history_indices)
+                ##################
+                # Encode History #
+                ##################
+                node_history_encoded = self.encode_node_history(mode,
+                                                                node_history_st,
+                                                                first_history_indices)
 
-        ##################
-        # Encode Present #
-        ##################
-        node_present = node_present_state_st  # [bs, state_dim]
+                ##################
+                # Encode Present #
+                ##################
+                node_present = node_present_state_st  # [bs, state_dim]
 
-        ##################
-        # Encode Future #
-        ##################
-        y = labels_st
+                ##################
+                # Encode Future #
+                ##################
+                y = labels_st
 
-        ##############################
-        # Encode Node Edges per Type #
-        ##############################
-        if self.hyperparams['edge_encoding']:
-            node_edges_encoded = list()
-            for edge_type in self.edge_types:
-                # Encode edges for given edge type
-                encoded_edges_type = self.encode_edge(mode,
-                                                        node_history,
-                                                        node_history_st,
-                                                        edge_type,
-                                                        neighbors[edge_type],
-                                                        neighbors_edge_value[edge_type],
-                                                        first_history_indices)
-                # List of [bs/nbs, enc_rnn_dim]
-                node_edges_encoded.append(encoded_edges_type)
-            #####################
-            # Encode Node Edges #
-            #####################
-            total_edge_influence = self.encode_total_edge_influence(mode,
-                                                                    node_edges_encoded,
-                                                                    node_history_encoded,
-                                                                    batch_size)
+                ##############################
+                # Encode Node Edges per Type #
+                ##############################
+                if self.hyperparams['edge_encoding']:
+                    node_edges_encoded = list()
+                    for edge_type in self.edge_types:
+                        # Encode edges for given edge type
+                        encoded_edges_type = self.encode_edge(mode,
+                                                                node_history,
+                                                                node_history_st,
+                                                                edge_type,
+                                                                neighbors[edge_type],
+                                                                neighbors_edge_value[edge_type],
+                                                                first_history_indices)
+                        # List of [bs/nbs, enc_rnn_dim]
+                        node_edges_encoded.append(encoded_edges_type)
+                    #####################
+                    # Encode Node Edges #
+                    #####################
+                    total_edge_influence = self.encode_total_edge_influence(mode,
+                                                                            node_edges_encoded,
+                                                                            node_history_encoded,
+                                                                            batch_size)
 
-        ################
-        # Map Encoding #
-        ################
-        if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
-            if self.log_writer and (self.curr_iter + 1) % 500 == 0:
-                map_clone = map.clone()
-                map_patch = self.hyperparams['map_encoder'][self.node_type]['patch_size']
-                map_clone[:, :, map_patch[1]-5:map_patch[1] +
-                            5, map_patch[0]-5:map_patch[0]+5] = 1.
-                self.log_writer.add_images(f"{self.node_type}/cropped_maps", map_clone,
-                                            self.curr_iter, dataformats='NCWH')
+                ################
+                # Map Encoding #
+                ################
+                if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
+                    if self.log_writer and (self.curr_iter + 1) % 500 == 0:
+                        map_clone = map.clone()
+                        map_patch = self.hyperparams['map_encoder'][self.node_type]['patch_size']
+                        map_clone[:, :, map_patch[1]-5:map_patch[1] +
+                                    5, map_patch[0]-5:map_patch[0]+5] = 1.
+                        self.log_writer.add_images(f"{self.node_type}/cropped_maps", map_clone,
+                                                    self.curr_iter, dataformats='NCWH')
 
-            encoded_map = self.node_modules[self.node_type +
-                                            '/map_encoder'](map * 2. - 1., (mode == ModeKeys.TRAIN))
-            do = self.hyperparams['map_encoder'][self.node_type]['dropout']
-            encoded_map = F.dropout(
-                encoded_map, do, training=(mode == ModeKeys.TRAIN))
+                    encoded_map = self.node_modules[self.node_type +
+                                                    '/map_encoder'](map * 2. - 1., (mode == ModeKeys.TRAIN))
+                    do = self.hyperparams['map_encoder'][self.node_type]['dropout']
+                    encoded_map = F.dropout(
+                        encoded_map, do, training=(mode == ModeKeys.TRAIN))
 
-        ######################################
-        # Concatenate Encoder Outputs into x #
-        ######################################
-        x_concat_list = list()
+                ######################################
+                # Concatenate Encoder Outputs into x #
+                ######################################
+                x_concat_list = list()
 
-        # Every node has an edge-influence encoder (which could just be zero).
-        if self.hyperparams['edge_encoding']:
-            # [bs/nbs, 4*enc_rnn_dim]
-            x_concat_list.append(total_edge_influence)
+                # Every node has an edge-influence encoder (which could just be zero).
+                if self.hyperparams['edge_encoding']:
+                    # [bs/nbs, 4*enc_rnn_dim]
+                    x_concat_list.append(total_edge_influence)
 
-        # Every node has a history encoder.
-        # [bs/nbs, enc_rnn_dim_history]
-        x_concat_list.append(node_history_encoded)
+                # Every node has a history encoder.
+                # [bs/nbs, enc_rnn_dim_history]
+                x_concat_list.append(node_history_encoded)
 
-        if self.hyperparams['incl_robot_node']:
-            robot_future_encoder = self.encode_robot_future(mode, x_r_t, y_r)
-            x_concat_list.append(robot_future_encoder)
+                if self.hyperparams['incl_robot_node']:
+                    robot_future_encoder = self.encode_robot_future(mode, x_r_t, y_r)
+                    x_concat_list.append(robot_future_encoder)
 
-        if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
-            if self.log_writer:
-                self.log_writer.add_scalar(f"{self.node_type}/encoded_map_max",
-                                            torch.max(torch.abs(encoded_map)), self.curr_iter)
-            x_concat_list.append(encoded_map)
+                if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
+                    if self.log_writer:
+                        self.log_writer.add_scalar(f"{self.node_type}/encoded_map_max",
+                                                    torch.max(torch.abs(encoded_map)), self.curr_iter)
+                    x_concat_list.append(encoded_map)
 
-        x = torch.cat(x_concat_list, dim=1)
-        return x, x_r_t, y_e, y_r, y, n_s_t0
+                x = torch.cat(x_concat_list, dim=1)
+                return x, x_r_t, y_e, y_r, y, n_s_t0
+        else:
+            #with torch.no_grad():
+            x, x_r_t, y_e, y_r, y = None, None, None, None, None
+            initial_dynamics = dict()
+
+            batch_size = inputs.shape[0]
+            #########################################
+            # Provide basic information to encoders #
+            #########################################
+            node_history = inputs
+            node_present_state = inputs[:, -1]
+            node_pos = inputs[:, -1, 0:2]
+            node_vel = inputs[:, -1, 2:4]
+
+            node_history_st = inputs_st
+            node_present_state_st = inputs_st[:, -1]
+            node_pos_st = inputs_st[:, -1, 0:2]
+            node_vel_st = inputs_st[:, -1, 2:4]
+
+            n_s_t0 = node_present_state_st
+
+            initial_dynamics['pos'] = node_pos
+            initial_dynamics['vel'] = node_vel
+
+            self.dynamic.set_initial_condition(initial_dynamics)
+
+            if self.hyperparams['incl_robot_node']:
+                x_r_t, y_r = robot[..., 0, :], robot[..., 1:, :]
+
+            ##################
+            # Encode History #
+            ##################
+            node_history_encoded = self.encode_node_history(mode,
+                                                            node_history_st,
+                                                            first_history_indices)
+
+            ##################
+            # Encode Present #
+            ##################
+            node_present = node_present_state_st  # [bs, state_dim]
+
+            ##################
+            # Encode Future #
+            ##################
+            y = labels_st
+
+            ##############################
+            # Encode Node Edges per Type #
+            ##############################
+            if self.hyperparams['edge_encoding']:
+                node_edges_encoded = list()
+                for edge_type in self.edge_types:
+                    # Encode edges for given edge type
+                    encoded_edges_type = self.encode_edge(mode,
+                                                            node_history,
+                                                            node_history_st,
+                                                            edge_type,
+                                                            neighbors[edge_type],
+                                                            neighbors_edge_value[edge_type],
+                                                            first_history_indices)
+                    # List of [bs/nbs, enc_rnn_dim]
+                    node_edges_encoded.append(encoded_edges_type)
+                #####################
+                # Encode Node Edges #
+                #####################
+                total_edge_influence = self.encode_total_edge_influence(mode,
+                                                                        node_edges_encoded,
+                                                                        node_history_encoded,
+                                                                        batch_size)
+
+            ################
+            # Map Encoding #
+            ################
+            if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
+                if self.log_writer and (self.curr_iter + 1) % 500 == 0:
+                    map_clone = map.clone()
+                    map_patch = self.hyperparams['map_encoder'][self.node_type]['patch_size']
+                    map_clone[:, :, map_patch[1]-5:map_patch[1] +
+                                5, map_patch[0]-5:map_patch[0]+5] = 1.
+                    self.log_writer.add_images(f"{self.node_type}/cropped_maps", map_clone,
+                                                self.curr_iter, dataformats='NCWH')
+
+                encoded_map = self.node_modules[self.node_type +
+                                                '/map_encoder'](map * 2. - 1., (mode == ModeKeys.TRAIN))
+                do = self.hyperparams['map_encoder'][self.node_type]['dropout']
+                encoded_map = F.dropout(
+                    encoded_map, do, training=(mode == ModeKeys.TRAIN))
+
+            ######################################
+            # Concatenate Encoder Outputs into x #
+            ######################################
+            x_concat_list = list()
+
+            # Every node has an edge-influence encoder (which could just be zero).
+            if self.hyperparams['edge_encoding']:
+                # [bs/nbs, 4*enc_rnn_dim]
+                x_concat_list.append(total_edge_influence)
+
+            # Every node has a history encoder.
+            # [bs/nbs, enc_rnn_dim_history]
+            x_concat_list.append(node_history_encoded)
+
+            if self.hyperparams['incl_robot_node']:
+                robot_future_encoder = self.encode_robot_future(mode, x_r_t, y_r)
+                x_concat_list.append(robot_future_encoder)
+
+            if self.hyperparams['use_map_encoding'] and self.node_type in self.hyperparams['map_encoder']:
+                if self.log_writer:
+                    self.log_writer.add_scalar(f"{self.node_type}/encoded_map_max",
+                                                torch.max(torch.abs(encoded_map)), self.curr_iter)
+                x_concat_list.append(encoded_map)
+
+            x = torch.cat(x_concat_list, dim=1)
+            return x, x_r_t, y_e, y_r, y, n_s_t0
 
     def encode_node_history(self, mode, node_hist, first_history_indices):
         """
@@ -674,7 +801,7 @@ class MultiHypothesisNet(object):
 
         return state
 
-    def encoder(self, x):
+    def encoder(self, x, fix_encoder= False):
         """
         Encodes: the combined in put into a hidden representation hx
         :param Input / Condition tensor.
@@ -682,7 +809,7 @@ class MultiHypothesisNet(object):
         # z = self.node_modules[self.node_type + '/EncoderFC'](x)
         return x
 
-    def decoder(self, z, n_s_t0, x_nr_t, horizon):
+    def decoder(self, z, n_s_t0, x_nr_t, horizon, joint_train, contrastive= False, fix_encoder = False):
         """
         Decoder: produces the hypotheses
         :param h: hidden representation
@@ -697,24 +824,52 @@ class MultiHypothesisNet(object):
             - we can predict 2*num_hyp.
             - To compare we must use the predicted y after integrator.
         """
-
+        cell = self.node_modules[self.node_type + '/decoder/rnn_cell']
         initial_h_model = self.node_modules[self.node_type + '/decoder/initial_h']
         initial_mu_model = self.node_modules[self.node_type + '/decoder/initial_mu']
         logits_model = self.node_modules[self.node_type + '/decoder/kalman_logits']
+        project_to_mus = self.node_modules[self.node_type + '/decoder/proj_to_mus']
+        con_model = self.node_modules[self.node_type + '/con_head']
+
         initial_h = initial_h_model(z)
-        initial_h = F.relu(initial_h)
         initial_mu = initial_mu_model(n_s_t0)  # [bs, num_hyp *2]
-        initial_mu = F.relu(initial_mu)
+        if fix_encoder:
+            initial_h = F.relu(initial_h)
+            initial_mu = F.relu(initial_mu)
 
         if self.hyperparams['incl_robot_node']:
             input_ = torch.cat([z, initial_mu.repeat(1, 20), x_nr_t], dim=1)
         else:
             #input_ = torch.cat([z, initial_mu.repeat(1, 20)], dim=1)
-            input_ = torch.cat([z, initial_mu], dim=1)
+            input_ = torch.cat([z, initial_mu.repeat(1, 20)], dim=1)
 
         features = torch.cat([input_, initial_h], dim=1)
         logits = logits_model(features)
-        return logits, features
+        if contrastive:
+            features = con_model(features)
+        if joint_train == False:
+            # ldam classification
+            return logits, F.normalize(features , dim = 1)
+        else:
+            # joint optimization
+            h = initial_h
+            mus = []
+            #import pdb; pdb.set_trace()
+            for t in range(horizon):
+                h_state = cell(input_, h)  # [bs, rnn_hidden_shape]
+                raw_mus = project_to_mus(h_state)
+                mu_x = raw_mus[:, self.hyperparams['num_hyp']:]
+                mu_y = raw_mus[:, :self.hyperparams['num_hyp']]
+                pred_mu = torch.stack([mu_x, mu_y], axis=2)  # [bs,num_hyp, 2]
+                mus.append(pred_mu)
+                if self.hyperparams['incl_robot_node']:
+                    input_ = torch.cat([z, raw_mus, x_nr_t], dim=1)
+                else:
+                    input_ = torch.cat([z, raw_mus], dim=1)
+                h = h_state
+            hypothesis = torch.stack(mus, dim=2)  # [bs, num_hyp, horizon, 2]
+            hypothesis = self.dynamic.integrate_samples(hypothesis, None)  # [bs, num_hyp, horizon, 2]
+            return hypothesis, F.normalize(features , dim = 1), logits
 
 
     def closest_mu(self, mus, gt):
@@ -778,8 +933,10 @@ class MultiHypothesisNet(object):
                    map,
                    prediction_horizon,
                    top_n, 
-                   targets,
-                   weight) -> torch.Tensor:
+                   targets_cl,
+                   weight,
+                   joint_train,
+                   fix_encoder = False) -> torch.Tensor:
         """
         Calculates the training loss for a batch.
 
@@ -806,15 +963,25 @@ class MultiHypothesisNet(object):
                                                                      neighbors=neighbors,
                                                                      neighbors_edge_value=neighbors_edge_value,
                                                                      robot=robot,
-                                                                     map=map)
-        z = self.encoder(x)
-        y_hat, features = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
-        loss = self.criterion.forward(y_hat, targets, weight)
-        loss_no_reweighted = self.criterion.forward(y_hat, targets, weight= None).detach()
+                                                                     map=map, 
+                                                                     fix_encoder = fix_encoder)
+        
+        z = self.encoder(x, fix_encoder = fix_encoder)
+        if joint_train == False:
+            # just classification with LDAM
+            y_hat, features = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon, joint_train)
+            loss = self.criterion_ldam.forward(y_hat, targets_cl, weight)
+            loss_no_reweighted = self.criterion_ldam.forward(y_hat, targets_cl, weight= None).detach()
 
-        #y_hat_output = self.criterion.get_output(y_hat, targets).detach() # just to calculate the accuracies correctly
-        return loss, loss_no_reweighted, F.log_softmax(y_hat, dim = 1).max(1)[1]
-
+            #y_hat_output = self.criterion.get_output(y_hat, targets).detach() # just to calculate the accuracies correctly
+            return loss, loss_no_reweighted, F.log_softmax(y_hat, dim = 1).max(1)[1]
+        else:
+            y_hat_reg, features, y_hat_cl = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon, joint_train, fix_encoder = fix_encoder)
+            loss_cl = self.criterion_ldam.forward(y_hat_cl, targets_cl, weight)
+            loss_cl_no_reweighted = self.criterion_ldam.forward(y_hat_cl, targets_cl, weight= None).detach()
+            loss_reg = self.ewta(labels, y_hat_reg, top_n)
+            return loss_reg, loss_cl, loss_cl_no_reweighted, F.log_softmax(y_hat_cl, dim = 1).max(1)[1]
+    
     def eval_loss(self,
                   inputs,
                   inputs_st,
@@ -825,7 +992,10 @@ class MultiHypothesisNet(object):
                   neighbors_edge_value,
                   robot,
                   map,
-                  prediction_horizon) -> torch.Tensor:
+                  prediction_horizon,
+                  targets_cl,
+                  weight,
+                  joint_train) -> torch.Tensor:
         """
         Calculates the evaluation loss for a batch.
 
@@ -844,20 +1014,30 @@ class MultiHypothesisNet(object):
         """
 
         mode = ModeKeys.EVAL
-        x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
-                                                                     inputs=inputs,
-                                                                     inputs_st=inputs_st,
-                                                                     labels=labels,
-                                                                     labels_st=labels_st,
-                                                                     first_history_indices=first_history_indices,
-                                                                     neighbors=neighbors,
-                                                                     neighbors_edge_value=neighbors_edge_value,
-                                                                     robot=robot,
-                                                                     map=map)
-        z = self.encoder(x)
-        y_hat, features = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
-        loss = self.wta(labels, y_hat)
-        return loss
+        with torch.no_grad():
+            x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                        inputs=inputs,
+                                                                        inputs_st=inputs_st,
+                                                                        labels=labels,
+                                                                        labels_st=labels_st,
+                                                                        first_history_indices=first_history_indices,
+                                                                        neighbors=neighbors,
+                                                                        neighbors_edge_value=neighbors_edge_value,
+                                                                        robot=robot,
+                                                                        map=map)
+            
+            z = self.encoder(x)
+            if joint_train == False:
+                y_hat, features = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
+                loss = self.wta(labels, y_hat)
+                return loss
+            else:
+                y_hat_reg, features, y_hat_cl = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon, joint_train)
+                loss_cl = self.criterion_ldam.forward(y_hat_cl, targets_cl, weight)
+                loss_cl_no_reweighted = self.criterion_ldam.forward(y_hat_cl, targets_cl, weight= None).detach()
+                loss_reg = self.wta(labels, y_hat_reg)
+                return loss_reg, loss_cl, loss_cl_no_reweighted, F.log_softmax(y_hat_cl, dim = 1).max(1)[1]
+        
 
     def predict(self,
                 inputs,
@@ -869,6 +1049,7 @@ class MultiHypothesisNet(object):
                 map,
                 prediction_horizon,
                 num_samples,
+                joint_train,
                 z_mode=False,
                 gmm_mode=False,
                 full_dist=True,
@@ -904,5 +1085,171 @@ class MultiHypothesisNet(object):
                                                                      robot=robot,
                                                                      map=map)
         z = self.encoder(x)
-        y_predicted, features = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon)
-        return y_predicted, F.normalize(features , dim = 1)
+        y_pred_reg, features, y_pred_cl = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon, joint_train)
+        return y_pred_reg, features, F.log_softmax(y_pred_cl, dim = 1).max(1)[1]
+
+    def train_loss_con(self,
+                   inputs,
+                   inputs_st,
+                   first_history_indices,
+                   labels,
+                   labels_st,
+                   neighbors,
+                   neighbors_edge_value,
+                   robot,
+                   map,
+                   prediction_horizon,
+                   top_n, 
+                   scores,
+                   joint_train) -> torch.Tensor:
+        """
+        Calculates the training loss for a batch.
+
+        :param inputs: Input tensor including the state for each agent over time [bs, t, state].
+        :param inputs_st: Standardized input tensor.
+        :param first_history_indices: First timestep (index) in scene for which data is available for a node [bs]
+        :param labels: Label tensor including the label output for each agent over time [bs, t, pred_state].
+        :param labels_st: Standardized label tensor.
+        :param neighbors: Preprocessed dict (indexed by edge type) of list of neighbor states over time.
+                            [[bs, t, neighbor state]]
+        :param neighbors_edge_value: Preprocessed edge values for all neighbor nodes [[N]]
+        :param robot: Standardized robot state over time. [bs, t, robot_state]
+        :param map: Tensor of Map information. [bs, channels, x, y]
+        :param prediction_horizon: Number of prediction timesteps.
+        :return: Scalar tensor -> nll loss
+        """
+        mode = ModeKeys.TRAIN
+        x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                     inputs=inputs,
+                                                                     inputs_st=inputs_st,
+                                                                     labels=labels,
+                                                                     labels_st=labels_st,
+                                                                     first_history_indices=first_history_indices,
+                                                                     neighbors=neighbors,
+                                                                     neighbors_edge_value=neighbors_edge_value,
+                                                                     robot=robot,
+                                                                     map=map)
+        z = self.encoder(x)
+        if joint_train == False:
+            # just classification with Con scores
+            _, features = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon, joint_train, contrastive = True)
+            loss = self.criterion_con_scores.forward(features, scores)
+
+            return loss
+        else:
+            y_hat_reg, features, _ = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon, joint_train, contrastive = True)
+            loss_cl,_,_ = self.criterion_con_scores.forward(features, scores)
+            loss_reg = self.ewta(labels, y_hat_reg, top_n)
+            return loss_reg, loss_cl
+    
+    def eval_loss_con(self,
+                  inputs,
+                  inputs_st,
+                  first_history_indices,
+                  labels,
+                  labels_st,
+                  neighbors,
+                  neighbors_edge_value,
+                  robot,
+                  map,
+                  prediction_horizon,
+                  scores,
+                  joint_train) -> torch.Tensor:
+        """
+        Calculates the evaluation loss for a batch.
+
+        :param inputs: Input tensor including the state for each agent over time [bs, t, state].
+        :param inputs_st: Standardized input tensor.
+        :param first_history_indices: First timestep (index) in scene for which data is available for a node [bs]
+        :param labels: Label tensor including the label output for each agent over time [bs, t, pred_state].
+        :param labels_st: Standardized label tensor.
+        :param neighbors: Preprocessed dict (indexed by edge type) of list of neighbor states over time.
+                            [[bs, t, neighbor state]]
+        :param neighbors_edge_value: Preprocessed edge values for all neighbor nodes [[N]]
+        :param robot: Standardized robot state over time. [bs, t, robot_state]
+        :param map: Tensor of Map information. [bs, channels, x, y]
+        :param prediction_horizon: Number of prediction timesteps.
+        :return: tuple(nll_q_is, nll_p, nll_exact, nll_sampled)
+        """
+
+        mode = ModeKeys.EVAL
+        with torch.no_grad():
+            x, x_nr_t, y_e, y_r, y, n_s_t0 = self.obtain_encoded_tensors(mode=mode,
+                                                                        inputs=inputs,
+                                                                        inputs_st=inputs_st,
+                                                                        labels=labels,
+                                                                        labels_st=labels_st,
+                                                                        first_history_indices=first_history_indices,
+                                                                        neighbors=neighbors,
+                                                                        neighbors_edge_value=neighbors_edge_value,
+                                                                        robot=robot,
+                                                                        map=map)
+            
+            z = self.encoder(x)
+            if joint_train == False:
+                _, features = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon, joint_train, contrastive = True)
+                loss = self.criterion_con_scores.forward(features, scores)
+                return loss
+            else:
+                y_hat_reg, features, _ = self.decoder(z, n_s_t0, x_nr_t, prediction_horizon, joint_train, contrastive = True)
+                loss_cl,_,_ = self.criterion_con_scores.forward(features, scores)
+                loss_reg = self.wta(labels, y_hat_reg)
+                return loss_reg, loss_cl
+
+
+
+class ScoreBasedConLoss(nn.Module):
+    def __init__(self, base_temperature=0.07):
+        super(ScoreBasedConLoss, self).__init__()
+        self.base_temperature = base_temperature
+
+    def forward(self, features, scores, temp=0.1):
+        # features has shape (bs,64)
+        # scores has shape (bs)
+        # univ (14_20) 0.1, 0.5 >>> All (0.16,0.33) Challenging (0.32,0.69)
+        # univ (15_07) 0.1, 0.7 >>> All (0.16,0.33) Challenging (0.32,0.68)
+        # univ (15_44) 0.08,0.7 >>> All (0.16,0.33) Challenging (0.32,0.69)
+        # univ (16_26) 0.1, 0.5 (200) >>> All (0.16,0.32) Challenging (0.32,0.69)
+        # univ (17_39) 0.1, 0.7 (start: epe-10) >>> All (0.16,0.33) Challenging (0.32,0.70)
+        # univ (18_02) 0.1, 0.7 (start: epe-5) >>> All (0.16,0.33) Challenging (0.33,0.72)
+        # univ (18_24) 0.1, 0.7 (start: epe-2) >>> All (0.16,0.33) Challenging (0.32,0.70)
+        # univ (19_) 0.1, 0.7 (no head) >>> All (0.16,0.32) Challenging (0.32,0.69)
+        # zara1 () 0.1, 0.7
+        device = (torch.device('cuda')
+                  if features.is_cuda
+                  else torch.device('cpu'))
+
+        batch_size = features.shape[0]
+        scores = scores.contiguous().view(-1, 1)  # (bs,1)
+        mask_positives = (torch.abs(scores.sub(scores.T)) < 0.1).float().to(device)  # (bs,bs)  # 0.1, 0.08
+        mask_negatives = (torch.abs(scores.sub(scores.T)) > 1.0).float().to(device)  # (bs,bs)  # 0.5, 0.7
+        mask_neutral = mask_positives + mask_negatives  # the zeros elements represent the neutral samples
+
+        # compute logits
+        anchor_dot_contrast = torch.div(torch.matmul(features, features.T), temp)  # (bs,bs)
+        # for numerical stability
+        logits_max, _ = torch.max(anchor_dot_contrast, dim=1, keepdim=True)  # (bs,1)
+        logits = anchor_dot_contrast - logits_max.detach()
+
+        # mask-out self-contrast cases
+        logits_mask = torch.scatter(
+            torch.ones_like(mask_positives),
+            1,
+            torch.arange(batch_size).view(-1, 1).to(device),
+            0
+        ) * mask_neutral
+
+        mask_positives = mask_positives * logits_mask  # (bs,bs)
+
+        # compute log_prob
+        exp_logits = torch.exp(logits) * logits_mask
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True) + 1e-20)
+
+        # compute mean of log-likelihood over positive
+        mean_log_prob_pos = (mask_positives * log_prob).sum(1) / (mask_positives.sum(1) + 1e-20)
+
+        # loss
+        loss = - (temp / self.base_temperature) * mean_log_prob_pos
+        loss = loss.view(1, batch_size).mean()
+
+        return loss, mask_positives.sum(1).mean(), mask_negatives.sum(1).mean()

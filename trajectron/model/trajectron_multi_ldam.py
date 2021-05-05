@@ -8,7 +8,7 @@ from model.dataset import get_timesteps_data, restore
 class Trajectron(object):
     def __init__(self, model_registrar,
                  hyperparams, log_writer,
-                 device, class_count_dict):
+                 device, class_count_dict= None, joint_train= True):
         super(Trajectron, self).__init__()
         self.hyperparams = hyperparams
         self.log_writer = log_writer
@@ -27,6 +27,7 @@ class Trajectron(object):
         self.ph = self.hyperparams['prediction_horizon']
         self.state = self.hyperparams['state']
         self.state_length = dict()
+        self.joint_train = joint_train
         for state_type in self.state.keys():
             self.state_length[state_type] = int(
                 np.sum([len(entity_dims)
@@ -68,14 +69,14 @@ class Trajectron(object):
 #         else:
 #             self.node_models_dict[node_type].step_annealers()
 
-    def train_loss(self, batch, node_type, weight, top_n=8):
+    def train_loss(self, batch, node_type, weight, top_n=8, fix_encoder = False):
         # TODO DATA explained here
         (first_history_index,
          x_t, y_t, x_st_t, y_st_t,
          neighbors_data_st,
          neighbors_edge_value,
          robot_traj_st_t,
-         map, target_class) = batch
+         map, target_class, scores) = batch
 
         x = x_t.to(self.device)
         y = y_t.to(self.device)
@@ -89,30 +90,52 @@ class Trajectron(object):
 
         # Run forward pass
         model = self.node_models_dict[node_type]
-        loss, loss_no_reweighted, logits = model.train_loss(inputs=x,
-                                inputs_st=x_st_t,
-                                first_history_indices=first_history_index,
-                                labels=y,
-                                labels_st=y_st_t,
-                                neighbors=restore(neighbors_data_st),
-                                neighbors_edge_value=restore(
-                                    neighbors_edge_value),
-                                robot=robot_traj_st_t,
-                                map=map,
-                                prediction_horizon=self.ph,
-                                top_n=top_n, 
-                                targets = target_class,
-                                weight = weight)
+        if self.joint_train:
+            loss_reg, loss_cl, loss_cl_no_reweighted, logits = model.train_loss(inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
+                                    neighbors=restore(neighbors_data_st),
+                                    neighbors_edge_value=restore(
+                                        neighbors_edge_value),
+                                    robot=robot_traj_st_t,
+                                    map=map,
+                                    prediction_horizon=self.ph,
+                                    top_n=top_n, 
+                                    targets_cl = target_class,
+                                    weight = weight,
+                                    joint_train = self.joint_train,
+                                    fix_encoder = fix_encoder)
 
-        return loss, loss_no_reweighted.detach(), logits
+            return loss_reg, loss_cl, loss_cl_no_reweighted.detach(), logits
+        else:
+            loss, loss_no_reweighted, logits = model.train_loss(inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
+                                    neighbors=restore(neighbors_data_st),
+                                    neighbors_edge_value=restore(
+                                        neighbors_edge_value),
+                                    robot=robot_traj_st_t,
+                                    map=map,
+                                    prediction_horizon=self.ph,
+                                    top_n=top_n, 
+                                    targets_cl = target_class,
+                                    weight = weight,
+                                    joint_train = self.joint_train, 
+                                    fix_encoder= fix_encoder)
 
-    def eval_loss(self, batch, node_type):
+            return loss, loss_no_reweighted.detach(), logits
+
+    def eval_loss(self, batch, node_type, weight):
         (first_history_index,
          x_t, y_t, x_st_t, y_st_t,
          neighbors_data_st,
          neighbors_edge_value,
          robot_traj_st_t,
-         map) = batch
+         map, target_class, scores) = batch
 
         x = x_t.to(self.device)
         y = y_t.to(self.device)
@@ -122,27 +145,46 @@ class Trajectron(object):
             robot_traj_st_t = robot_traj_st_t.to(self.device)
         if type(map) == torch.Tensor:
             map = map.to(self.device)
-
+        target_class = target_class.to(self.device)
         # Run forward pass
         model = self.node_models_dict[node_type]
-        nll = model.eval_loss(inputs=x,
-                              inputs_st=x_st_t,
-                              first_history_indices=first_history_index,
-                              labels=y,
-                              labels_st=y_st_t,
-                              neighbors=restore(neighbors_data_st),
-                              neighbors_edge_value=restore(
-                                  neighbors_edge_value),
-                              robot=robot_traj_st_t,
-                              map=map,
-                              prediction_horizon=self.ph)
+        if self.joint_train:
+            loss_reg, loss_cl, loss_cl_no_reweighted, logits = model.eval_loss(inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
+                                    neighbors=restore(neighbors_data_st),
+                                    neighbors_edge_value=restore(
+                                        neighbors_edge_value),
+                                    robot=robot_traj_st_t,
+                                    map=map,
+                                    prediction_horizon=self.ph,
+                                    targets_cl = target_class,
+                                    weight = weight,
+                                    joint_train = self.joint_train)
 
-        return nll.cpu().detach().numpy()
+            return loss_reg, loss_cl, loss_cl_no_reweighted.detach(), logits
+        else:
+            nll = model.eval_loss(inputs=x,
+                                inputs_st=x_st_t,
+                                first_history_indices=first_history_index,
+                                labels=y,
+                                labels_st=y_st_t,
+                                neighbors=restore(neighbors_data_st),
+                                neighbors_edge_value=restore(
+                                    neighbors_edge_value),
+                                robot=robot_traj_st_t,
+                                map=map,
+                                prediction_horizon=self.ph)
+
+            return nll.cpu().detach().numpy()
 
     def predict(self,
                 scene,
                 timesteps,
                 ph,
+                joint_train, 
                 num_samples=1,
                 min_future_timesteps=0,
                 min_history_timesteps=1,
@@ -150,9 +192,9 @@ class Trajectron(object):
                 gmm_mode=False,
                 full_dist=True,
                 all_z_sep=False):
-
         predictions_dict = {}
         features_list = []
+        predictions_cl_list = []
         for node_type in self.env.NodeType:
             if node_type not in self.pred_state:
                 continue
@@ -182,7 +224,7 @@ class Trajectron(object):
                 map = map.to(self.device)
 
             # Run forward pass
-            predictions, features = model.predict(inputs=x,
+            predictions, features, predictions_cl = model.predict(inputs=x,
                                         inputs_st=x_st_t,
                                         first_history_indices=first_history_index,
                                         neighbors=neighbors_data_st,
@@ -191,12 +233,14 @@ class Trajectron(object):
                                         map=map,
                                         prediction_horizon=ph,
                                         num_samples=num_samples,
+                                        joint_train = joint_train,
                                         z_mode=z_mode,
                                         gmm_mode=gmm_mode,
                                         full_dist=full_dist,
                                         all_z_sep=all_z_sep)
-            
+
             features_list.append(features)
+            predictions_cl_list = predictions_cl.tolist()
 
             predictions_np = predictions.cpu().detach().numpy() #[bs, num_hyp, horizon, 2]
             # predictions in trajectron  should be: [num_hyp, bs, horizon, 2]
@@ -209,4 +253,110 @@ class Trajectron(object):
                 predictions_dict[ts][nodes[i]] = np.transpose(
                     predictions_np[:, [i]], (1, 0, 2, 3))
 
-        return predictions_dict, features_list
+        return predictions_dict, features_list, predictions_cl_list
+    
+    def train_loss_con(self, batch, node_type, top_n=8):
+        # TODO DATA explained here
+        (first_history_index,
+         x_t, y_t, x_st_t, y_st_t,
+         neighbors_data_st,
+         neighbors_edge_value,
+         robot_traj_st_t,
+         map, target_class, scores) = batch
+
+        x = x_t.to(self.device)
+        y = y_t.to(self.device)
+        x_st_t = x_st_t.to(self.device)
+        y_st_t = y_st_t.to(self.device)
+        if robot_traj_st_t is not None:
+            robot_traj_st_t = robot_traj_st_t.to(self.device)
+        if type(map) == torch.Tensor:
+            map = map.to(self.device)
+        target_class = target_class.to(self.device)
+
+        # Run forward pass
+        model = self.node_models_dict[node_type]
+        if self.joint_train:
+            loss_reg, loss_cl = model.train_loss_con(inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
+                                    neighbors=restore(neighbors_data_st),
+                                    neighbors_edge_value=restore(
+                                        neighbors_edge_value),
+                                    robot=robot_traj_st_t,
+                                    map=map,
+                                    prediction_horizon=self.ph,
+                                    top_n=top_n, 
+                                    scores = scores,
+                                    joint_train = self.joint_train)
+
+            return loss_reg, loss_cl
+        else:
+            loss = model.train_loss_con(inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
+                                    neighbors=restore(neighbors_data_st),
+                                    neighbors_edge_value=restore(
+                                        neighbors_edge_value),
+                                    robot=robot_traj_st_t,
+                                    map=map,
+                                    prediction_horizon=self.ph,
+                                    top_n=top_n, 
+                                    scores = scores,
+                                    joint_train = self.joint_train)
+
+            return loss
+
+    def eval_loss_con(self, batch, node_type):
+        (first_history_index,
+         x_t, y_t, x_st_t, y_st_t,
+         neighbors_data_st,
+         neighbors_edge_value,
+         robot_traj_st_t,
+         map, target_class, scores) = batch
+
+        x = x_t.to(self.device)
+        y = y_t.to(self.device)
+        x_st_t = x_st_t.to(self.device)
+        y_st_t = y_st_t.to(self.device)
+        if robot_traj_st_t is not None:
+            robot_traj_st_t = robot_traj_st_t.to(self.device)
+        if type(map) == torch.Tensor:
+            map = map.to(self.device)
+        target_class = target_class.to(self.device)
+        # Run forward pass
+        model = self.node_models_dict[node_type]
+        if self.joint_train:
+            loss_reg, loss_cl = model.eval_loss_con(inputs=x,
+                                    inputs_st=x_st_t,
+                                    first_history_indices=first_history_index,
+                                    labels=y,
+                                    labels_st=y_st_t,
+                                    neighbors=restore(neighbors_data_st),
+                                    neighbors_edge_value=restore(
+                                        neighbors_edge_value),
+                                    robot=robot_traj_st_t,
+                                    map=map,
+                                    prediction_horizon=self.ph,
+                                    scores = scores,
+                                    joint_train = self.joint_train)
+
+            return loss_reg, loss_cl
+        else:
+            nll = model.eval_loss_con(inputs=x,
+                                inputs_st=x_st_t,
+                                first_history_indices=first_history_index,
+                                labels=y,
+                                labels_st=y_st_t,
+                                neighbors=restore(neighbors_data_st),
+                                neighbors_edge_value=restore(
+                                    neighbors_edge_value),
+                                robot=robot_traj_st_t,
+                                map=map,
+                                prediction_horizon=self.ph)
+
+            return nll.cpu().detach().numpy()

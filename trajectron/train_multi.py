@@ -461,8 +461,8 @@ def main():
                 #                             'eval/ml',
                 #                             epoch)
 
-        if args.save_every is not None and args.debug is False and epoch % args.save_every == 0:
-            model_registrar.save_models(epoch)
+        if args.save_every is not None and args.debug is False and (epoch % args.save_every == 0 or epoch == 1):
+            model_registrar.save_models(epoch, args.log_tag)
     train_loss_df.to_csv('train_loss%s.csv' % args.log_tag, sep=";")
     eval_loss_df.to_csv('eval_loss%s.csv' % args.log_tag, sep=";")
 
