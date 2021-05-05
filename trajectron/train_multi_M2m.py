@@ -347,7 +347,7 @@ if __name__ == '__main__':
     if args.net_trajectron_ts:
         start_at = int(args.net_trajectron_ts)
     for epoch in range(start_at + 1, start_at + args.train_epochs + 1):
-        if epoch > 50 and epoch % 20 == 0:
+        if epoch > 50 and epoch % 50 == 0:
             top_n = max(top_n // 2, 1)
         print(f"top n: {top_n}")
         model_registrar.to(args.device)
@@ -359,7 +359,7 @@ if __name__ == '__main__':
             print("**** Train Epoch with generation ****")
             # Generation process and training with generated data
             train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
-                                                                            100, train_data_loader, hyperparams, log_writer, save_gen_dir, args.device)
+                                                                            50, train_data_loader, hyperparams, log_writer, save_gen_dir, args.device)
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
             print("**** Train Epoch without generation ****")
@@ -369,9 +369,9 @@ if __name__ == '__main__':
             #                                          100, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
             # else:
             class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
-                                                100, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
-        # if epoch >= 450:
-        #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
+                                                50, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
+        if epoch >= 225:
+            criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
         
         if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
             validation_metrics(model=trajectron, criterion=criterion_2,

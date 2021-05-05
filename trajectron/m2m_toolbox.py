@@ -39,6 +39,8 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
     trajectron.model_registrar.train()
 
     horizon = hyperparams['prediction_horizon']
+    if criterion.weight is not None:
+        coef = coef**3 # 1000000
 
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
@@ -109,6 +111,7 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
                               correct_epoch / data_loader.dataset.len, epoch)
         log_writer.add_scalar(f"{node_type}/regression/train/loss", loss["regression"].mean().item(), epoch)
         log_writer.add_scalar(f"{node_type}/joint_training/train/loss", loss["joint"].mean().item(), epoch)
+        log_writer.add_scalar(f"{node_type}/joint_training/train/coef", coef, epoch)
 
         ret_class_acc = {k: class_correct[k] / hyperparams['class_count_dic'][k]
                          for k in hyperparams['class_count_dic'].keys()}
@@ -215,7 +218,7 @@ def train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_s
             joint_loss = con_loss * coef + regression_loss
             pbar.set_description(
                 f"Epoch {epoch}, {node_type} C-L: {con_loss.item():.2f} <= (P: {mask_pos.item():.2f}: N: {mask_neg.item():.2f}), R-L: {regression_loss.item():.2f}, J-L: {joint_loss.item():.2f}")
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             # train_loss.register_hook(lambda grad: print(grad))
             train_loss.backward()
             # Clipping gradients.
@@ -452,9 +455,9 @@ def validation_metrics(model, criterion, eval_data_loader, epoch, eval_device, h
                 del batch
             loss[node_type] = {k: round(np.mean(eval_loss[k]), 3) for k in eval_loss.keys()}
             accuracy[node_type] = round(np.sum(correct) / num_samples, 3)
-            log_writer.add_scalar(f"{node_type}/classification/validation/accuracy", accuracy[node_type], epoch)
-            log_writer.add_scalar(f"{node_type}/classification/validation/classification_loss", loss[node_type]["classification"], epoch)
-            log_writer.add_scalar(f"{node_type}/classification/validation/regression_loss", loss[node_type]["regression"], epoch)
+            log_writer.add_scalar(f"{node_type}/joint_training/validation/accuracy", accuracy[node_type], epoch)
+            log_writer.add_scalar(f"{node_type}/joint_training/validation/classification_loss", loss[node_type]["classification"], epoch)
+            log_writer.add_scalar(f"{node_type}/joint_training/validation/regression_loss", loss[node_type]["regression"], epoch)
             print(f"C-L: {loss[node_type]['classification']}, Accuracy {accuracy[node_type]}, R-L: {loss[node_type]['regression']}")
     # import pdb; pdb.set_trace()
     return loss, accuracy
@@ -726,7 +729,8 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
     trajectron.model_registrar.train()
 
     results = dict()
-
+    if criterion.weight is not None:
+        coef = coef**3
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
         pbar = tqdm(data_loader, ncols=160)
@@ -844,7 +848,8 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
 
         log_writer.add_scalar(f"{node_type}/classification_f/train/regression_loss", loss["regression"].mean(), epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/classification_loss", loss["classification"].mean(), epoch)
-        log_writer.add_scalar(f"{node_type}/classification_f/train/joint_loss", loss["joint"].mean(), epoch)
+        log_writer.add_scalar(f"{node_type}/joint_training/train/loss", loss["joint"].mean(), epoch)
+        log_writer.add_scalar(f"{node_type}/joint_training/train/coef", coef, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/oth_loss", oth_loss / total_oth, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/gen_loss", gen_loss / total_gen, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/train_acc", 100 * results[node_type]['acc'], epoch)
@@ -884,7 +889,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
         print(bcolors.UNDERLINE + "Class Acc:" + bcolors.ENDC)
         print(bcolors.OKBLUE + str(ret_class_acc) + bcolors.ENDC)
         print()
-        import pdb; pdb.set_trace()
+        # import pdb; pdb.set_trace()
 
     return results, ret_class_acc, ret_class_loss, ret_class_gen
 

@@ -1,6 +1,3 @@
-import evaluation
-from model.trajectron_multi import Trajectron
-from model.model_registrar import ModelRegistrar
 from tqdm import tqdm
 import sys
 import os
@@ -12,6 +9,10 @@ import numpy as np
 import pandas as pd
 
 sys.path.append("../../trajectron")
+
+import evaluation
+from model.trajectron_multi import Trajectron
+from model.model_registrar import ModelRegistrar
 
 seed = 0
 np.random.seed(seed)
@@ -39,8 +40,6 @@ def load_model(model_dir, env, ts=100):
 
     trajectron.set_environment(env)
     # trajectron.set_annealing_params()
-    import pdb
-    pdb.set_trace()
     return trajectron, hyperparams
 
 
