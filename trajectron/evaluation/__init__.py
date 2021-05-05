@@ -1,1 +1,1 @@
-from .evaluation import compute_batch_statistics, log_batch_errors, print_batch_errors
+from .evaluation import compute_batch_statistics, log_batch_errors, print_batch_errors, compute_batch_statistics_classes
