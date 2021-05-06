@@ -261,7 +261,7 @@ def make_step(grad, attack, step_size):
     return step
 
 
-def random_perturb(inputs, attack, eps=0.5, std=0.1):
+def random_perturb(inputs, attack, eps=0.5, std=0.001):
     if attack == 'inf':
         r_inputs = 2 * (torch.rand_like(inputs) - 0.5) * eps
     elif attack == 'normal':

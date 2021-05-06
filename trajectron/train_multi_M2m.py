@@ -172,8 +172,8 @@ if __name__ == '__main__':
     # lower acceptance bound on logit for g: L(g;x*,k)
     hyperparams['gamma'] = 0.8  # (0.9, 0.99) Lower -> bigger p accept
     hyperparams['lam'] = 0.1  # (0.01, 0.1, 0.5) Lower -> bigger p accept
-    hyperparams['step_size'] = 0.1
-    hyperparams['attack_iter'] = 10
+    hyperparams['step_size'] = 0.01
+    hyperparams['attack_iter'] = 20
     hyperparams['non_linearity'] = 'none'
     hyperparams['data_loader_sampler'] = 'random'
     # hyperparams['learning_rate_style'] = 'cosannw'
@@ -347,8 +347,8 @@ if __name__ == '__main__':
     if args.net_trajectron_ts:
         start_at = int(args.net_trajectron_ts)
     for epoch in range(start_at + 1, start_at + args.train_epochs + 1):
-        if epoch > 50 and epoch % 50 == 0:
-            top_n = max(top_n // 2, 1)
+        if epoch >= 50 and epoch % 50 == 0:
+            top_n = max(top_n // 2, 1)  # top_n 20 (0:50) - 10: (50:100) - 5: (100:150) - 2: (150:200)- 1: (200:250)
         print(f"top n: {top_n}")
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
@@ -363,16 +363,16 @@ if __name__ == '__main__':
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
             print("**** Train Epoch without generation ****")
-            
+
             # if epoch <= 300:
             # epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
             #                                          100, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
             # else:
             class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
                                                 50, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
-        if epoch >= 225:
-            criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
-        
+        # if epoch >= 225:
+        #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
+
         if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
             validation_metrics(model=trajectron, criterion=criterion_2,
                                eval_data_loader=eval_data_loader, epoch=epoch,
