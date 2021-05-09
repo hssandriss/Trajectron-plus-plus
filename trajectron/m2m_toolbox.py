@@ -815,8 +815,9 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
             curr_iter += 1
             # Stepping forward the learning rate scheduler and annealers.
             lr_scheduler[node_type].step()
+
         # Saving generated data
-        if num_gen > 0:
+        if total_gen > 0:
             print("Generated data !")
             # Concatenate inputs
             gen_o = torch.cat(gen_outs, dim=0)
