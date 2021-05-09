@@ -40,7 +40,7 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
 
     horizon = hyperparams['prediction_horizon']
     if criterion.weight is not None:
-        coef = coef**3 # 1000000
+        coef = coef**3  # 1000000
 
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
@@ -299,6 +299,8 @@ def viz_orig_gen(input_orig,
                  kde=False):
     (_, _, _, x_st_t_orig, _, _, _, _) = input_orig
     (_, _, _, x_st_t_gen, _, _, _, _) = input_gen
+    plt.clf()
+    plt.cla()
     cmap = ['k', 'b', 'y', 'g', 'r']
     x_st_t_orig = x_st_t_orig.squeeze(0)
     x_st_t_gen = x_st_t_gen.squeeze(0)
@@ -311,7 +313,11 @@ def viz_orig_gen(input_orig,
     ax.text(x_st_t_gen[-1, 0], x_st_t_gen[-1, 1], "final", fontsize=7)
     ax.axis('equal')
     fig.savefig(os.path.join(save_dir, f'example_gen_epoch{epoch}.png'), dpi=300)
-    log_writer.add_figure('generation/trajectory_visualization', fig, epoch)
+    fig.clf()
+    plt.close()
+    ax.cla()
+    if log_writer is not None:
+        log_writer.add_figure('generation/trajectory_visualization', fig, epoch)
 
 
 def input_to_device(input, device):
@@ -430,7 +436,7 @@ def validation_metrics(model, criterion, eval_data_loader, epoch, eval_device, h
         accuracy = {}
         # Calculate evaluation loss
         for node_type, data_loader in eval_data_loader.items():
-            eval_loss ={ "regression":[], "classification":[]}
+            eval_loss = {"regression": [], "classification": []}
             correct = 0
             num_samples = 0
             print(f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
@@ -463,8 +469,21 @@ def validation_metrics(model, criterion, eval_data_loader, epoch, eval_device, h
     return loss, accuracy
 
 
+def nb_sever_angular_deviations(x_st_t, len_hist):
+    # Add search for intersection
+    ndir_change = 0
+    for i in range(0, len_hist, 3):
+        v0 = x_st_t[i + 1][:2] - x_st_t[i][:2]
+        v1 = x_st_t[i + 2][:2] - x_st_t[i + 1][:2]
+        angle = torch.acos(v0.dot(v1) / (torch.norm(v0) * torch.norm(v1)))
+        if angle.abs() > 0.75:
+            ndir_change += 1
+    return ndir_change
+
+
 def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets, p_accept,
                gamma, lam, step_size, random_start=True, max_iter=10):
+    global once
     """
     Over-sampling via M2m Algorithm (Pg: 4) from line 7:e
 
@@ -552,7 +571,6 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         for i in range(len(combined_neighbors)):
             combined_neighbors[i] = combined_neighbors[i] - make_step(grad_neighbors[i], 'l2', step_size)
             combined_neighbors[i] = torch.clamp(combined_neighbors[i], 0, 1)
-    # import pdb; pdb.set_trace()
     # Weights of the network remain unchanged
     after_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
     after_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
@@ -831,6 +849,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
             gen_sample = select_from_batch_input(gen_i, sample_indices)
             # Drawing random trajectories
             viz_orig_gen(orig_sample, gen_sample, log_writer, epoch, save_dir=save_gen_dir)
+
         results[node_type] = {
             'train_loss': oth_loss / total_oth,
             'gen_loss': gen_loss / total_gen,
@@ -874,7 +893,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
             log_writer.add_scalar(f"{node_type}/classification_f/train/gen_class_{k}", ret_class_gen[k], epoch)
 
         print(bcolors.OKGREEN + msg + bcolors.ENDC)
-        
+
         print(bcolors.UNDERLINE + "Overall classification loss:" + bcolors.ENDC)
         print(bcolors.OKBLUE + str(round(loss["classification"].mean().item(), 3)) + bcolors.ENDC)
         print(bcolors.UNDERLINE + "Overall regression loss:" + bcolors.ENDC)

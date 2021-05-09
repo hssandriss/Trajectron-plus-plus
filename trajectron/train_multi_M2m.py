@@ -171,9 +171,9 @@ if __name__ == '__main__':
     hyperparams['beta'] = 0.9  # (0.9, 0.99, 0.999) Lower -> bigger p accept
     # lower acceptance bound on logit for g: L(g;x*,k)
     hyperparams['gamma'] = 0.8  # (0.9, 0.99) Lower -> bigger p accept
-    hyperparams['lam'] = 0.1  # (0.01, 0.1, 0.5) Lower -> bigger p accept
-    hyperparams['step_size'] = 0.01
-    hyperparams['attack_iter'] = 20
+    hyperparams['lam'] = 0.01  # (0.01, 0.1, 0.5) Lower -> bigger p accept
+    hyperparams['step_size'] = 0.05
+    hyperparams['attack_iter'] = 10
     hyperparams['non_linearity'] = 'none'
     hyperparams['data_loader_sampler'] = 'random'
     # hyperparams['learning_rate_style'] = 'cosannw'
