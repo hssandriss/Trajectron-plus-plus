@@ -165,17 +165,19 @@ if __name__ == '__main__':
 
     hyperparams['class_count_dic'] = train_dataset.class_count_dict[0]
     hyperparams['class_count'] = list(hyperparams['class_count_dic'].values())
-    hyperparams['class_weights'] = train_dataset.class_weights[0]
+    class_weights = train_dataset.class_weights[0].to(args.device)
+    hyperparams['class_weights'] = class_weights.cpu().tolist()
     hyperparams['num_classes'] = len(hyperparams['class_count_dic'])
-    # TODO Read these values from command line args
+    # ! M2m hyperparameters
     hyperparams['beta'] = 0.9  # (0.9, 0.99, 0.999) Lower -> bigger p accept
-    # lower acceptance bound on logit for g: L(g;x*,k)
+
     hyperparams['gamma'] = 0.8  # (0.9, 0.99) Lower -> bigger p accept
-    hyperparams['lam'] = 0.01  # (0.01, 0.1, 0.5) Lower -> bigger p accept
-    hyperparams['step_size'] = 0.05
-    hyperparams['attack_iter'] = 10
+    hyperparams['lam'] = 0.1  # (0.01, 0.1, 0.5) Lower -> bigger p accept
+    hyperparams['step_size'] = 0.1
+    hyperparams['attack_iter'] = 15
     hyperparams['non_linearity'] = 'none'
     hyperparams['data_loader_sampler'] = 'random'
+    # ! Override hyperparameters
     # hyperparams['learning_rate_style'] = 'cosannw'
     # hyperparams['learning_rate'] = 0.01  # Override lr
 
@@ -323,7 +325,7 @@ if __name__ == '__main__':
         save_gen_dir = os.path.join(model_dir, "generation")
     # Classification criterion
     # https://arxiv.org/pdf/1901.05555.pdf
-    weight = hyperparams['class_weights'].to(args.device)
+    class_weights = class_weights.to(args.device)
     criterion_2 = nn.CrossEntropyLoss(reduction='none')
     criterion_1 = ScoreBasedConLoss()  # Use criterion_1._get_name() to get the name of the loss
     # with open(f'{model_dir}/config_{extra_tag}.json', 'w') as fout:
@@ -371,7 +373,7 @@ if __name__ == '__main__':
             class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
                                                 50, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
         # if epoch >= 225:
-        #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=weight)
+        #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=class_weights)
 
         if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
             validation_metrics(model=trajectron, criterion=criterion_2,
@@ -392,3 +394,5 @@ if __name__ == '__main__':
                 json.dump(cls_generated, fout)
             with open(f'{model_dir}/losses_{extra_tag}.json', 'w') as fout:
                 json.dump(losses, fout)
+        with open(os.path.join(model_dir, 'config.json'), 'w') as conf_json:
+            json.dump(hyperparams, conf_json)

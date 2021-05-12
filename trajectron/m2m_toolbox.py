@@ -481,6 +481,11 @@ def nb_sever_angular_deviations(x_st_t, len_hist):
     return ndir_change
 
 
+def replace_nan(tensor):
+    tensor[tensor != tensor] = 0
+    return tensor
+
+
 def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets, p_accept,
                gamma, lam, step_size, random_start=True, max_iter=10):
     global once
@@ -511,40 +516,39 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         for key in preprocessed_edges.keys():  # Edge data
             preprocessed_edges[key][0] = preprocessed_edges[key][0].detach().requires_grad_(False)
             preprocessed_edges[key][1] = preprocessed_edges[key][1].detach().requires_grad_(False)
-    x_st_t_original = x_st_t.clone()
-    # Editing the state history while keeping initial and final states fixed
-    # x_st_t_i = x_st_t[:, 0, :].unsqueeze(1).to(device)
-    # x_st_t_f = x_st_t[:, -1, :].unsqueeze(1).to(device)
-    # x_st_t_o = x_st_t[:, 1:-1, :].to(device)
+    # * Editing the state history while keeping initial and final states fixed
+    x_st_t_i = x_st_t[:, 0, :].unsqueeze(1).to(device)
+    x_st_t_f = x_st_t[:, -1, :].unsqueeze(1).to(device)
+    x_st_t_o = x_st_t[:, 1:-1, :].to(device)
     # Preparing edges (decomposing the preprocessed edges dict)
     edge_keys = list(preprocessed_edges.keys())
     edge_masks = [preprocessed_edges[k][1] for k in preprocessed_edges.keys()]
     combined_neighbors = [preprocessed_edges[k][0][:, :, :6] for k in preprocessed_edges.keys()]  # [bs, hist_len, state]
-
-    # Random Noise
+    # * Random Noise
     if random_start:
-        # Verify the shapes of the noise
-        # Add random noise to node states
-        # random_noise = random_perturb(x_st_t_o, 'l2', 0.5)
-        # x_st_t_o = torch.clamp(x_st_t_o + random_noise, 0, 1)
-        # random_noise = random_perturb(x_st_t, 'l2', 0.5)
-        random_noise = random_perturb(x_st_t, 'normal').to(device)
-        # import pdb; pdb.set_trace()
-        x_st_t = torch.clamp(x_st_t + random_noise, 0, 1)
-        # import pdb; pdb.set_trace()
+        # * Adding noise just in the middle steps in node history
+        random_noise = random_perturb(x_st_t_o, 'normal').to(device)
+        x_st_t_o = torch.clamp(x_st_t_o + random_noise, 0, 1)
+        # * Adding noise to node history
+        # random_noise = random_perturb(x_st_t, 'normal').to(device)
+        # x_st_t = torch.clamp(x_st_t + random_noise, 0, 1)
+        # * Adding noise to combined neighbors
         for i in range(len(combined_neighbors)):
             # random_noise = random_perturb(combined_neighbors[i], 'l2', 0.5)
             random_noise = random_perturb(combined_neighbors[i], 'normal').to(device)
             combined_neighbors[i] = torch.clamp(combined_neighbors[i] + random_noise, 0, 1)
+    # Verification
     initial_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
     initial_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
-
-    # Loop for optimizing the objective
+    # initial data
+    x_st_t_o_pre = x_st_t_o.clone().detach().requires_grad_(False)
+    # x_st_t_i = x_st_t.clone().detach().requires_grad_(False)
+    combined_neighbors_pre = combined_neighbors[0].clone().detach().requires_grad_(False)
+    # * Loop for optimizing the objective
     for _ in range(max_iter):
-        # x_st_t_o = x_st_t_o.clone().detach().requires_grad_(True)
-        # x_st_t = torch.cat((x_st_t_i, x_st_t_o, x_st_t_f), dim=1).to(device)
-        x_st_t = x_st_t.clone().detach().requires_grad_(True)
-
+        x_st_t_o = x_st_t_o.clone().detach().requires_grad_(True)
+        x_st_t = torch.cat((x_st_t_i, x_st_t_o, x_st_t_f), dim=1).to(device)
+        # x_st_t = x_st_t.clone().detach().requires_grad_(True)
         combined_neighbors = [tensor.clone().detach().requires_grad_(True) for tensor in combined_neighbors]
         joint_histories = [torch.cat((x_st_t, tensor), dim=-1) for tensor in combined_neighbors]
         edge_values = [[joint_histories[i], edge_masks[i]] for i in range(len(edge_masks))]
@@ -553,36 +557,33 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         # Calculating the objective
         outputs_g, _, _ = trajectron_g.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
         outputs_r, _, _ = trajectron.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
-
-        loss = criterion(outputs_g, gen_targets) + lam * classwise_loss(outputs_r, seed_targets)
+        loss = criterion(outputs_g, gen_targets) + lam * classwise_loss(outputs_r, seed_targets) \
+            + 0.5 * (F.kl_div(F.log_softmax(replace_nan((x_st_t_o - x_st_t_o_pre)**2)),
+                              torch.randn(size=x_st_t_o_pre.shape).to(device)) +
+                     F.kl_div(F.log_softmax(replace_nan((combined_neighbors[0] - combined_neighbors_pre)**2)),
+                              torch.randn(size=combined_neighbors_pre.shape).to(device)))
         # Calculate grad with respect to each part of the input: x, n_s_t0, x_nr_t
-
-        grad_vals = torch.autograd.grad(loss, [x_st_t, *combined_neighbors])
-
+        grad_vals = torch.autograd.grad(loss, [x_st_t_o, *combined_neighbors])
         grad_x_st_t = grad_vals[0]
         grad_neighbors = grad_vals[1:]
-
-        # x_st_t_o = x_st_t_o - make_step(grad_x_st_t, 'l2', step_size)
-        # x_st_t_o = torch.clamp(x_st_t_o, 0, 1)
-
-        x_st_t = x_st_t - make_step(grad_x_st_t, 'l2', step_size)
-        x_st_t = torch.clamp(x_st_t, 0, 1)
-
+        x_st_t_o = x_st_t_o - make_step(grad_x_st_t, 'l2', step_size)
+        x_st_t_o = torch.clamp(x_st_t_o, 0, 1)
+        # x_st_t = x_st_t - make_step(grad_x_st_t, 'l2', step_size)
+        # x_st_t = torch.clamp(x_st_t, 0, 1)
         for i in range(len(combined_neighbors)):
             combined_neighbors[i] = combined_neighbors[i] - make_step(grad_neighbors[i], 'l2', step_size)
             combined_neighbors[i] = torch.clamp(combined_neighbors[i], 0, 1)
-    # Weights of the network remain unchanged
+    # * Verification that weights of the network remain unchanged during generation loop
     after_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
     after_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
     assert torch.all(initial_rnn_weights_g.eq(after_rnn_weights_g))
     assert torch.all(initial_rnn_weights_f.eq(after_rnn_weights_f))
-    # x_st_t = torch.cat((x_st_t_i, x_st_t_o, x_st_t_f), dim=1).to(device)
+    # * Recombining the new input
+    x_st_t = torch.cat((x_st_t_i, x_st_t_o, x_st_t_f), dim=1).to(device)
     joint_histories = [torch.cat((x_st_t, tensor), dim=-1).to(device) for tensor in combined_neighbors]
     edge_values = [[joint_histories[i], edge_masks[i]] for i in range(len(edge_masks))]
     preprocessed_edges = dict(zip(edge_keys, edge_values))
     inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
-
-    # inputs = (first_history_index.to(device), x_t.to(device), y_t.to(device), x_st_t.to(device), y_st_t.to(device), preprocessed_edges, robot_traj_st_t, map)
     inputs = detach_batch_input(inputs)
     # Inputs now has the new values (verified)
     outputs_g, _, _ = trajectron_g.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
@@ -591,10 +592,8 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
     probs_g = torch.softmax(outputs_g, dim=1)[one_hot.to(torch.bool)]
     correct = ((probs_g >= gamma) * torch.bernoulli(p_accept)).type(torch.bool).to(device)
     correct = correct * mask_reliable
-
     torch.backends.cudnn.enabled = True
     trajectron.model_registrar.train()
-
     return inputs, correct
 
 
@@ -817,9 +816,11 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
             lr_scheduler[node_type].step()
 
         # Saving generated data
-        if total_gen > 0:
+        if total_gen > 1e-6:
+            import pdb; pdb.set_trace()
             print("Generated data !")
             # Concatenate inputs
+            import pdb; pdb.set_trace()
             gen_o = torch.cat(gen_outs, dim=0)
             gen_i = cat_inputs(gen_ins)
             orig_o = torch.cat(orig_outs, dim=0)
