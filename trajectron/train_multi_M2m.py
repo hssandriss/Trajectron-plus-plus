@@ -170,13 +170,13 @@ if __name__ == '__main__':
     hyperparams['num_classes'] = len(hyperparams['class_count_dic'])
     # ! M2m hyperparameters
     hyperparams['beta'] = 0.9  # (0.9, 0.99, 0.999) Lower -> bigger p accept
-
     hyperparams['gamma'] = 0.8  # (0.9, 0.99) Lower -> bigger p accept
-    hyperparams['lam'] = 0.1  # (0.01, 0.1, 0.5) Lower -> bigger p accept
+    hyperparams['lam'] = 0.01  # (0.01, 0.1, 0.5) Lower -> bigger p accept
     hyperparams['step_size'] = 0.1
     hyperparams['attack_iter'] = 15
     hyperparams['non_linearity'] = 'none'
     hyperparams['data_loader_sampler'] = 'random'
+    hyperparams['append_gen'] = 'yes'
     # ! Override hyperparameters
     # hyperparams['learning_rate_style'] = 'cosannw'
     # hyperparams['learning_rate'] = 0.01  # Override lr

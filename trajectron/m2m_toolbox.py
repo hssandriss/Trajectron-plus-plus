@@ -428,6 +428,22 @@ def select_from_batch_input(input, select_idx):
     return ret
 
 
+def append_to_batch_input(input, new_input):
+    ret = []
+    for idx, e in enumerate(input):
+        if isinstance(e, torch.Tensor):
+            ret.append(torch.cat((e, new_input[idx]), dim=0))
+        elif isinstance(e, dict) and isinstance(list(e.values())[0], list):
+            dic = {}
+            for k, v in e.items():
+                assert all(isinstance(elem, torch.Tensor) for elem in v)
+                dic[k] = [torch.cat((tensor, new_input[idx][k][i]), dim=0) for i, tensor in enumerate(v)]
+            ret.append(dic)
+        else:
+            ret.append(None)
+    return ret
+
+
 def validation_metrics(model, criterion, eval_data_loader, epoch, eval_device, hyperparams, log_writer):
     model.model_registrar.eval()
     horizon = hyperparams['prediction_horizon']
@@ -544,6 +560,7 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
     x_st_t_o_pre = x_st_t_o.clone().detach().requires_grad_(False)
     # x_st_t_i = x_st_t.clone().detach().requires_grad_(False)
     combined_neighbors_pre = combined_neighbors[0].clone().detach().requires_grad_(False)
+    print(combined_neighbors_pre.shape)
     # * Loop for optimizing the objective
     for _ in range(max_iter):
         x_st_t_o = x_st_t_o.clone().detach().requires_grad_(True)
@@ -557,11 +574,15 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         # Calculating the objective
         outputs_g, _, _ = trajectron_g.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
         outputs_r, _, _ = trajectron.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
+        dist_x_st_t_o = torch.norm(input=replace_nan(x_st_t_o[:, :, :2]) - replace_nan(x_st_t_o_pre[:, :, :2]), p=2, dim=2)
+        dist_comb_neigh = torch.norm(input=replace_nan(combined_neighbors[0][:, :, :2]) - replace_nan(combined_neighbors[0][:, :, :2]), p=2, dim=2)
+        gaussian_noise_x_st_t_o = torch.randn(size=dist_x_st_t_o.shape, device=device)
+        gaussian_noise_comb_neigh = torch.randn(size=dist_comb_neigh.shape, device=device)
+        assert F.kl_div(dist_x_st_t_o.log(), gaussian_noise_x_st_t_o) > 0
+        assert F.kl_div(dist_comb_neigh.log(), gaussian_noise_comb_neigh) > 0
         loss = criterion(outputs_g, gen_targets) + lam * classwise_loss(outputs_r, seed_targets) \
-            + 0.5 * (F.kl_div(F.log_softmax(replace_nan((x_st_t_o - x_st_t_o_pre)**2)),
-                              torch.randn(size=x_st_t_o_pre.shape).to(device)) +
-                     F.kl_div(F.log_softmax(replace_nan((combined_neighbors[0] - combined_neighbors_pre)**2)),
-                              torch.randn(size=combined_neighbors_pre.shape).to(device)))
+            + 0.5 * (F.kl_div(dist_x_st_t_o.log(), gaussian_noise_x_st_t_o) +
+                     F.kl_div(dist_comb_neigh.log(), gaussian_noise_comb_neigh))
         # Calculate grad with respect to each part of the input: x, n_s_t0, x_nr_t
         grad_vals = torch.autograd.grad(loss, [x_st_t_o, *combined_neighbors])
         grad_x_st_t = grad_vals[0]
@@ -638,35 +659,42 @@ def train_net(trajectron, trajectron_g, node_type, criterion, coef, optimizer, l
     # ! Now we have sampled seed classes k0 of initial point x0 given gen_target class k.
     gen_inputs, correct_mask = generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets,
                                           p_accept, hyperparams['gamma'], hyperparams['lam'], hyperparams['step_size'], True, hyperparams['attack_iter'])
-    #######################
-    # Only change the correctly generated samples
     num_gen = sum_tensor(correct_mask)
-    num_others = batch_size - num_gen
-    gen_c_idx = gen_idx[correct_mask]
-    others_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
-    others_mask[gen_c_idx] = 0  # can be used for computing regression loss
-    others_idx = others_mask.nonzero().view(-1)
-    # (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map) = inputs_tuple
-    if num_gen > 0:
-        gen_inputs_c = select_from_batch_input(gen_inputs, correct_mask)   # seems correct
-        new_inputs = replace_in_batch_input_by_index(inputs_tuple, gen_inputs_c, gen_c_idx)
-        new_targets = targets.clone()
-        gen_targets_c = gen_targets[correct_mask]
-        new_targets[gen_c_idx] = gen_targets_c
-        inputs_tuple = new_inputs
-    # Verify
-    # if num_gen > 0:
-    #     y_hat_verif, _ = trajectron_g.predict(inputs_tuple, node_type, mode=ModeKeys.EVAL)
-    #     y_gen_verif, _ = trajectron_g.predict(gen_inputs_c, node_type, mode=ModeKeys.EVAL)
-    #     print(y_hat_verif[gen_c_idx] == y_gen_verif)
-    # inputs_tuple = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
-    # ! Bare in mind that here we do not replace the seed targets but create new variants of gen_targets[correct_mask]
+    # TODO Add possibility to extend the batch with generated samples
+    if hyperparams['append_gen'] == 'no':
+        num_others = batch_size - num_gen
+        #######################
+        # Only change the input of correctly generated samples
+        gen_c_idx = gen_idx[correct_mask]
+        others_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
+        others_mask[gen_c_idx] = 0  # can be used for computing regression loss
+        others_idx = others_mask.nonzero().view(-1)
+        if num_gen > 0:
+            gen_inputs_c = select_from_batch_input(gen_inputs, correct_mask)
+            new_inputs = replace_in_batch_input_by_index(inputs_tuple, gen_inputs_c, gen_c_idx)
+            new_targets = targets.clone()
+            gen_targets_c = gen_targets[correct_mask]
+            new_targets[gen_c_idx] = gen_targets_c
+            inputs_tuple = new_inputs
+    else:
+        #######################
+        # Here we want to add the new generated samples to the batch
+        # gen_inputs, gen_targets
+        others_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
+        if num_gen > 0:
+            num_others = batch_size
+            others_mask = torch.cat((others_mask, torch.zeros(num_gen, dtype=torch.bool, device=device)), dim=0)
+            others_idx = others_mask.nonzero().view(-1)
+            gen_c_idx = (others_mask == 0).nonzero().view(-1)
+            gen_inputs_c = select_from_batch_input(gen_inputs, correct_mask)
+            gen_targets_c = gen_targets[correct_mask]
+            inputs_tuple = append_to_batch_input(inputs_tuple, gen_inputs_c)
+            targets = torch.cat((targets, gen_targets_c), dim=0)
+            assert targets.shape[0] > batch_size
     # Normal training for a minibatch
-
     regression_gt = inputs_tuple[2].to(device)
     optimizer[node_type].zero_grad()
     y_hat, hypothesis, _ = trajectron.predict(inputs_tuple, horizon, node_type, mode=ModeKeys.TRAIN)
-
     train_loss = criterion(y_hat, targets)
     classification_loss = train_loss.mean()
     regression_loss = trajectron.regression_loss(node_type, regression_gt[others_mask], hypothesis[others_mask], top_n)
@@ -679,7 +707,6 @@ def train_net(trajectron, trajectron_g, node_type, criterion, coef, optimizer, l
     ################################
     # Summing up the class based gens, loss, acc for current batch
     ################################
-
     predicted = torch.argmax(F.softmax(y_hat, 1), 1)
     for k in hyperparams['class_count_dic'].keys():
         k_idx = (targets == k)
