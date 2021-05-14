@@ -285,6 +285,27 @@ def filter_unreliable(trajectron_g, node_type, threshold, seed_targets, seed_inp
     return mask_reliable
 
 
+def compute_squared_dist_xy(x1, x2, dim):
+    return (((x2 - x1)**2).sum(dim=dim))**0.5
+
+
+def compute_angles(x, epsilon=1e-7):
+    """
+    :input: Expects shape [Bs, Ts, 2]
+    :returns angles of trajectory [Bs, Ts-2, 1]
+    """
+    angles = []
+    # x = replace_nan(x)
+    for i in range(x.shape[1] - 2):
+        u_tensor = (x[:, i + 1, :] - x[:, i, :])
+        v_tensor = (x[:, i + 2, :] - x[:, i + 1, :])
+        # Clamp because https://github.com/pytorch/pytorch/issues/8069
+        cos = torch.clamp(F.cosine_similarity(u_tensor, v_tensor, dim=1), -1 + epsilon, 1 - epsilon)
+        # angles.append(torch.acos(cos).unsqueeze(1)) # can be unbound
+        angles.append(cos.unsqueeze(1))  # [-1, 1]
+    return torch.cat(angles, dim=1)
+
+
 def viz_orig_gen(input_orig,
                  input_gen,
                  log_writer,
@@ -299,6 +320,7 @@ def viz_orig_gen(input_orig,
                  kde=False):
     (_, _, _, x_st_t_orig, _, _, _, _) = input_orig
     (_, _, _, x_st_t_gen, _, _, _, _) = input_gen
+
     plt.clf()
     plt.cla()
     cmap = ['k', 'b', 'y', 'g', 'r']
@@ -306,11 +328,24 @@ def viz_orig_gen(input_orig,
     x_st_t_gen = x_st_t_gen.squeeze(0)
     fig, ax = plt.subplots(figsize=(3, 3))
     ax.plot(x_st_t_orig[:, 0], x_st_t_orig[:, 1], 'k--')
-    ax.text(x_st_t_orig[0, 0], x_st_t_orig[0, 1], "initial", fontsize=7)
-    ax.text(x_st_t_orig[-1, 0], x_st_t_orig[-1, 1], "final", fontsize=7)
+    ax.text(x_st_t_orig[0, 0], x_st_t_orig[0, 1], "i", fontsize=4)
+    ax.text(x_st_t_orig[-1, 0], x_st_t_orig[-1, 1], "f", fontsize=4)
     ax.plot(x_st_t_gen[:, 0], x_st_t_gen[:, 1], 'w--', path_effects=[pe.Stroke(linewidth=edge_width, foreground='k'), pe.Normal()])
-    ax.text(x_st_t_gen[0, 0], x_st_t_gen[0, 1], "initial", fontsize=7)
-    ax.text(x_st_t_gen[-1, 0], x_st_t_gen[-1, 1], "final", fontsize=7)
+    ax.text(x_st_t_gen[0, 0], x_st_t_gen[0, 1], "i", fontsize=4)
+    ax.text(x_st_t_gen[-1, 0], x_st_t_gen[-1, 1], "f", fontsize=4)
+
+    angle_diff = (torch.acos(compute_angles(x_st_t_gen[:, :2].unsqueeze(0))) -
+                  torch.acos(compute_angles(x_st_t_orig[:, :2].unsqueeze(0)))).abs().squeeze(0)  # [Ts-2]
+    angle_diff = (angle_diff * 180) / 3.14
+    j = 0
+    for i in range(x_st_t_orig.shape[0] - 2):
+        s = round(angle_diff[j].squeeze(0).item(), 3)
+        xy = (x_st_t_gen[i + 1][0].item(), x_st_t_gen[i + 1][1].item())
+        ax.annotate(text=s, xy=xy, fontsize=4)
+        j += 1
+    ax.legend([f'sum angle disp: {round(angle_diff.sum().item(), 3)}',
+               f'avg angle disp: {round(angle_diff.mean().item(), 3)}'],
+              loc=2, prop={'size': 4})
     ax.axis('equal')
     fig.savefig(os.path.join(save_dir, f'example_gen_epoch{epoch}.png'), dpi=300)
     fig.clf()
@@ -354,7 +389,8 @@ def cat_inputs(input_list):
             dic = {}
             for k, v in e.items():
                 assert all(isinstance(elem, torch.Tensor) for elem in v)
-                dic[k] = [torch.cat([input[i][k][0] for input in input_list], dim=0), torch.cat([input[i][k][1] for input in input_list], dim=0)]
+                dic[k] = [torch.cat([input[i][k][0] for input in input_list], dim=0),
+                          torch.cat([input[i][k][1] for input in input_list], dim=0)]
             ret.append(dic)
         else:
             ret.append(None)
@@ -497,8 +533,8 @@ def nb_sever_angular_deviations(x_st_t, len_hist):
     return ndir_change
 
 
-def replace_nan(tensor):
-    tensor[tensor != tensor] = 0
+def replace_nan(tensor, val=0):
+    tensor[tensor != tensor] = val
     return tensor
 
 
@@ -554,13 +590,14 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
             random_noise = random_perturb(combined_neighbors[i], 'normal').to(device)
             combined_neighbors[i] = torch.clamp(combined_neighbors[i] + random_noise, 0, 1)
     # Verification
-    initial_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
-    initial_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
+    initial_rnn_weights_g = trajectron_g.model_registrar.get_name_match(
+        "PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
+    initial_rnn_weights_f = trajectron.model_registrar.get_name_match(
+        "PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
     # initial data
     x_st_t_o_pre = x_st_t_o.clone().detach().requires_grad_(False)
-    # x_st_t_i = x_st_t.clone().detach().requires_grad_(False)
+    x_st_t_pre = x_st_t.clone().detach().requires_grad_(False)
     combined_neighbors_pre = combined_neighbors[0].clone().detach().requires_grad_(False)
-    print(combined_neighbors_pre.shape)
     # * Loop for optimizing the objective
     for _ in range(max_iter):
         x_st_t_o = x_st_t_o.clone().detach().requires_grad_(True)
@@ -574,15 +611,18 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         # Calculating the objective
         outputs_g, _, _ = trajectron_g.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
         outputs_r, _, _ = trajectron.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
-        dist_x_st_t_o = torch.norm(input=replace_nan(x_st_t_o[:, :, :2]) - replace_nan(x_st_t_o_pre[:, :, :2]), p=2, dim=2)
-        dist_comb_neigh = torch.norm(input=replace_nan(combined_neighbors[0][:, :, :2]) - replace_nan(combined_neighbors[0][:, :, :2]), p=2, dim=2)
-        gaussian_noise_x_st_t_o = torch.randn(size=dist_x_st_t_o.shape, device=device)
-        gaussian_noise_comb_neigh = torch.randn(size=dist_comb_neigh.shape, device=device)
-        assert F.kl_div(dist_x_st_t_o.log(), gaussian_noise_x_st_t_o) > 0
-        assert F.kl_div(dist_comb_neigh.log(), gaussian_noise_comb_neigh) > 0
-        loss = criterion(outputs_g, gen_targets) + lam * classwise_loss(outputs_r, seed_targets) \
-            + 0.5 * (F.kl_div(dist_x_st_t_o.log(), gaussian_noise_x_st_t_o) +
-                     F.kl_div(dist_comb_neigh.log(), gaussian_noise_comb_neigh))
+        # dist_x_st_t_o = torch.norm(input=replace_nan(x_st_t_o[:, :, :2]) - replace_nan(x_st_t_o_pre[:, :, :2]), p=2, dim=2)
+        # dist_comb_neigh = torch.norm(input=replace_nan(combined_neighbors[0][:, :, :2]) - replace_nan(combined_neighbors[0][:, :, :2]), p=2, dim=2)
+        # gaussian_noise_x_st_t_o = torch.randn(size=dist_x_st_t_o.shape, device=device)
+        # gaussian_noise_comb_neigh = torch.randn(size=dist_comb_neigh.shape, device=device)
+        # assert (dist_x_st_t_o > 1).sum() == 0, "cannot be used as proper prob"
+        # assert (dist_comb_neigh > 1).sum() == 0, "cannot be used as proper prob"
+        # assert F.kl_div(dist_x_st_t_o.log(), gaussian_noise_x_st_t_o) > 0
+        # assert F.kl_div(dist_comb_neigh.log(), gaussian_noise_comb_neigh) > 0
+        loss = criterion(outputs_g, gen_targets) + lam * classwise_loss(outputs_r, seed_targets) + \
+            0.8 * ((compute_angles(x_st_t[:, :, :2]) - compute_angles(x_st_t_pre[:, :, :2])).pow(2)).mean()
+        # + 0.5 * (F.kl_div(F.log_softmax(dist_x_st_t_o, dim=-1), F.softmax(gaussian_noise_x_st_t_o, dim=-1), reduction='batchmean') +
+        #          F.kl_div(F.log_softmax(dist_comb_neigh, dim=-1), F.softmax(gaussian_noise_comb_neigh, dim=-1), reduction='batchmean'))
         # Calculate grad with respect to each part of the input: x, n_s_t0, x_nr_t
         grad_vals = torch.autograd.grad(loss, [x_st_t_o, *combined_neighbors])
         grad_x_st_t = grad_vals[0]
@@ -660,6 +700,7 @@ def train_net(trajectron, trajectron_g, node_type, criterion, coef, optimizer, l
     gen_inputs, correct_mask = generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets,
                                           p_accept, hyperparams['gamma'], hyperparams['lam'], hyperparams['step_size'], True, hyperparams['attack_iter'])
     num_gen = sum_tensor(correct_mask)
+
     # TODO Add possibility to extend the batch with generated samples
     if hyperparams['append_gen'] == 'no':
         num_others = batch_size - num_gen
@@ -681,11 +722,14 @@ def train_net(trajectron, trajectron_g, node_type, criterion, coef, optimizer, l
         # Here we want to add the new generated samples to the batch
         # gen_inputs, gen_targets
         others_mask = torch.ones(batch_size, dtype=torch.bool, device=device)
+        others_idx = others_mask.nonzero().view(-1)
+        gen_c_idx = (others_mask == 0).nonzero().view(-1)
+        num_others = batch_size
         if num_gen > 0:
-            num_others = batch_size
-            others_mask = torch.cat((others_mask, torch.zeros(num_gen, dtype=torch.bool, device=device)), dim=0)
+            others_mask = torch.cat((others_mask, torch.zeros(int(num_gen), dtype=torch.bool, device=device)), dim=0)
             others_idx = others_mask.nonzero().view(-1)
             gen_c_idx = (others_mask == 0).nonzero().view(-1)
+            num_others = batch_size
             gen_inputs_c = select_from_batch_input(gen_inputs, correct_mask)
             gen_targets_c = gen_targets[correct_mask]
             inputs_tuple = append_to_batch_input(inputs_tuple, gen_inputs_c)
@@ -726,7 +770,6 @@ def train_net(trajectron, trajectron_g, node_type, criterion, coef, optimizer, l
     ################################
     # For logging the training
     ################################
-
     oth_loss_total = sum_tensor(train_loss[others_idx])
     gen_loss_total = sum_tensor(train_loss[gen_c_idx])
 
@@ -817,7 +860,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
             loss_epoch["joint"].append(joint_loss.unsqueeze(0))
             gen_stats = " ".join([f"{k}: {class_gen_batch[k]}/{original_count_stats[k]}" for k in range(hyperparams['num_classes'])])
             pbar.set_description(
-                f"Epoch: {epoch}, {node_type}, Gen: ({gen_stats}), C-L {classification_loss:.2f} (Oth: {t_loss/num_others+1e-6:.2f} - Gen: {g_loss/(num_gen+1e-6):.2f}), R-L: {regression_loss:.2f}), J-L: {joint_loss:.2f})")
+                f"Epoch: {epoch},{node_type},Gen: ({gen_stats}),C-L {classification_loss:.2f} (Oth: {t_loss/num_others+1e-6:.2f} - Gen: {g_loss/(num_gen+1e-6):.2f}),R-L: {regression_loss:.2f}),J-L: {joint_loss:.2f})")
             if gen_in is not None:
                 # to CPU in order to save memory
                 gen_ins.append(input_to_device(gen_in, 'cpu'))
@@ -841,13 +884,11 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
             curr_iter += 1
             # Stepping forward the learning rate scheduler and annealers.
             lr_scheduler[node_type].step()
-
         # Saving generated data
         if total_gen > 1e-6:
-            import pdb; pdb.set_trace()
+            # import pdb; pdb.set_trace()
             print("Generated data !")
             # Concatenate inputs
-            import pdb; pdb.set_trace()
             gen_o = torch.cat(gen_outs, dim=0)
             gen_i = cat_inputs(gen_ins)
             orig_o = torch.cat(orig_outs, dim=0)

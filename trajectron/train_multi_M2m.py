@@ -113,7 +113,8 @@ if __name__ == '__main__':
     # model_tag = "model_classification_22_02_2021-12_27_cosann_10_2_ce_2_conloss_eth_ar3"
     if args.gen:
         # if we are generating (create subfolder for f)
-        model_dir_f = os.path.join(args.log_dir, args.experiment, model_tag, model_tag + '_f_edge_and_hist_' + datetime.now().strftime("%d_%m_%Y-%H_%M"))
+        model_dir_f = os.path.join(args.log_dir, args.experiment, model_tag, model_tag +
+                                   '_f_edge_and_hist_' + datetime.now().strftime("%d_%m_%Y-%H_%M"))
         pathlib.Path(model_dir_f).mkdir(parents=True, exist_ok=True)
         model_dir_g = os.path.join(args.log_dir, args.experiment, model_tag)
         checkpoint_name = 'model_registrar-%d-%s.pt' % (args.net_g_ts, args.net_g_extra_tag)
@@ -170,7 +171,7 @@ if __name__ == '__main__':
     hyperparams['num_classes'] = len(hyperparams['class_count_dic'])
     # ! M2m hyperparameters
     hyperparams['beta'] = 0.9  # (0.9, 0.99, 0.999) Lower -> bigger p accept
-    hyperparams['gamma'] = 0.8  # (0.9, 0.99) Lower -> bigger p accept
+    hyperparams['gamma'] = 0.75  # (0.9, 0.99) Lower -> bigger p accept
     hyperparams['lam'] = 0.01  # (0.01, 0.1, 0.5) Lower -> bigger p accept
     hyperparams['step_size'] = 0.1
     hyperparams['attack_iter'] = 15
