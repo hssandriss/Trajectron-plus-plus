@@ -172,9 +172,9 @@ if __name__ == '__main__':
     # ! M2m hyperparameters
     hyperparams['beta'] = 0.9  # (0.9, 0.99, 0.999) Lower -> bigger p accept
     hyperparams['gamma'] = 0.75  # (0.9, 0.99) Lower -> bigger p accept
-    hyperparams['lam'] = 0.01  # (0.01, 0.1, 0.5) Lower -> bigger p accept
+    hyperparams['lam'] = 0.1  # (0.01, 0.1, 0.5) Lower -> bigger p accept
     hyperparams['step_size'] = 0.1
-    hyperparams['attack_iter'] = 15
+    hyperparams['attack_iter'] = 10
     hyperparams['non_linearity'] = 'none'
     hyperparams['data_loader_sampler'] = 'random'
     hyperparams['append_gen'] = 'yes'
@@ -350,8 +350,8 @@ if __name__ == '__main__':
     if args.net_trajectron_ts:
         start_at = int(args.net_trajectron_ts)
     for epoch in range(start_at + 1, start_at + args.train_epochs + 1):
-        if epoch >= 50 and epoch % 50 == 0:
-            top_n = max(top_n // 2, 1)  # top_n 20 (0:50) - 10: (50:100) - 5: (100:150) - 2: (150:200)- 1: (200:250)
+        if epoch >= 45 and epoch % 45 == 0:
+            top_n = max(top_n // 2, 1)  # top_n 20 (0:45) - 10: (45:90) - 5: (90:135) - 2: (135:180)- 1: (180:225)
         print(f"top n: {top_n}")
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
