@@ -717,13 +717,14 @@ def train_net(trajectron, trajectron_g, node_type, criterion, coef, optimizer, l
     seed_targets = targets_orig[select_idx]
     # seed_inputs = inputs_orig_tuple[select_idx]
     seed_inputs = select_from_batch_input(inputs_tuple, select_idx)
+    # Masking indices that already have nan values in x_st_t
     mask_nans = mask_nan(seed_inputs[3])
     seed_inputs = select_from_batch_input(seed_inputs, mask_nans)
     seed_targets = seed_targets[mask_nans]
     gen_targets = gen_targets[mask_nans]
     p_accept = p_accept[mask_nans]
     gen_idx = gen_idx[mask_nans]
-
+    assert torch.any(torch.isnan(seed_inputs[3])).item() == False, "NaN gradient risk in generation process"
     # ! Now we have sampled seed classes k0 of initial point x0 given gen_target class k.
     gen_inputs, correct_mask = generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets,
                                           p_accept, hyperparams['gamma'], hyperparams['lam'], hyperparams['step_size'], True, hyperparams['attack_iter'])

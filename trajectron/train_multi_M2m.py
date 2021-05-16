@@ -362,7 +362,7 @@ if __name__ == '__main__':
             print("**** Train Epoch with generation ****")
             # Generation process and training with generated data
             train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
-                                                                            50, train_data_loader, hyperparams, log_writer, save_gen_dir, args.device)
+                                                                            100, train_data_loader, hyperparams, log_writer, save_gen_dir, args.device)
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
             print("**** Train Epoch without generation ****")
@@ -372,7 +372,7 @@ if __name__ == '__main__':
             #                                          100, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
             # else:
             class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
-                                                50, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
+                                                100, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
         # if epoch >= 225:
         #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=class_weights)
 
