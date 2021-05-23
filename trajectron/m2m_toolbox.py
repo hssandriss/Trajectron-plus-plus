@@ -1,20 +1,21 @@
-from operator import length_hint
+import os
+import pathlib
 import warnings
-from numpy.lib.polynomial import polysub
-import torch.nn as nn
+from operator import length_hint
+
+import dill
+import matplotlib.patheffects as pe
+import matplotlib.pyplot as plt
 import numpy as np
 import torch
-import os
-import dill
+import torch.nn as nn
 import torch.nn.functional as F
 import tqdm
+from numpy.lib.polynomial import polysub
 from torch import Size, mode, nn, tensor
 from tqdm.auto import tqdm
-from model.model_utils import ModeKeys
-import pathlib
-import matplotlib.pyplot as plt
-import matplotlib.patheffects as pe
 
+from model.model_utils import ModeKeys
 from model.trajectron_M2m import Trajectron
 
 # warnings.filterwarnings("ignore", category=UserWarning)
@@ -34,14 +35,18 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 
-def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion, coef,
+def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
                 train_data_loader, epoch, top_n, hyperparams, log_writer, device):
 
     trajectron.model_registrar.train()
 
     horizon = hyperparams['prediction_horizon']
+    coef = hyperparams['main_coef']
+    if hyperparams['coef_schedule'] != "":
+        coef = 2 * top_n
+
     if criterion.weight is not None:
-        coef = coef**3  # 1000000
+        coef = coef * 1000  # 1000000
 
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
@@ -186,13 +191,16 @@ def train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, cr
     return np.mean(loss_epoch)
 
 
-def train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion, coef,
+def train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
                                 train_data_loader, epoch, top_n, hyperparams, log_writer, device):
     """
     Training with contrastive loss (discriminate features using score value)
     """
     trajectron.model_registrar.train()
     horizon = hyperparams['prediction_horizon']
+    coef = hyperparams['main_coef']
+    if hyperparams['coef_schedule'] != "":
+        coef = 2 * top_n
 
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
@@ -278,8 +286,8 @@ def viz_orig_gen(input_orig,
         xy = (x_st_t_gen[i + 1][0].item(), x_st_t_gen[i + 1][1].item())
         ax.annotate(text=s, xy=xy, fontsize=4)
         j += 1
-    length_origin = compute_trajectory_length(x_st_t_orig[:, :2].unsqueeze(0))
-    length_gen = compute_trajectory_length(x_st_t_gen[:, :2].unsqueeze(0))
+    length_origin = compute_trajectory_distance(x_st_t_orig[:, :2].unsqueeze(0))
+    length_gen = compute_trajectory_distance(x_st_t_gen[:, :2].unsqueeze(0))
     ax.legend([f'sum angle disp: {round(angle_diff.sum().item(), 3)}',
                f'avg angle disp: {round(angle_diff.mean().item(), 3)}',
                f'original length: {round(length_origin.sum().item(), 3)}',
@@ -509,7 +517,7 @@ def compute_squared_dist_xy(x1, x2, dim):
     return (((x2 - x1)**2).sum(dim=dim))**0.5
 
 
-def compute_trajectory_length(x):
+def compute_trajectory_distance(x):
     """
     :input: Expects shape [Bs, Ts, 2]
     :returns: angles of trajectory [Bs, Ts-1]
@@ -557,7 +565,7 @@ def mask_nan(x):
 
 
 def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets, p_accept,
-               gamma, lam, step_size, random_start=True, max_iter=10):
+               gamma, lam, step_size, hyperparams, random_start=True, max_iter=10):
     """
     Over-sampling via M2m Algorithm (Pg: 4) from line 7:e
 
@@ -575,6 +583,7 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
     trajectron.model_registrar.eval()
     trajectron_g.model_registrar.eval()
     criterion = nn.CrossEntropyLoss()
+    gen_coef = hyperparams['gen_coef']
     # How well does g perform initially on seed_inputs/targets ?
     mask_reliable = filter_unreliable(trajectron_g, node_type, 0.8, seed_targets, seed_inputs)
     # We will use x_st_t and preprocessed_edges
@@ -629,21 +638,17 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         # Calculating the objective
         outputs_g, _, _ = trajectron_g.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
         outputs_r, _, _ = trajectron.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
-
-        angle_diff = (compute_trajectory_angles(x_st_t[:, :, :2]) - compute_trajectory_angles(x_st_t_pre[:, :, :2])).pow(2).mean()
-        # angles_mask_nan = ~torch.isnan(angle_diff)
-        # angle_diff = angle_diff[angles_mask_nan].mean()
-        # assert torch.isnan(angle_diff).item() == False, "Loss is nan!"
-        length_diff = (compute_trajectory_length(x_st_t[:, :, :2]) - compute_trajectory_length(x_st_t_pre[:, :, :2])).pow(2).mean()
-        # length_mask_nan = ~torch.isnan(length_diff)
-        # length_diff = length_diff[length_mask_nan].mean()
-        # assert torch.isnan(length_diff).item() == False, "Loss is nan!"
         # M2m original objective
-        loss = criterion(outputs_g, gen_targets) + lam * classwise_loss(outputs_r, seed_targets) + \
-            0.8 * (angle_diff + length_diff)
+        loss = criterion(outputs_g, gen_targets) + lam * classwise_loss(outputs_r, seed_targets)
+        if hyperparams['gen_angular_obj'] == 'yes':
+            angle_objective = (compute_trajectory_angles(x_st_t[:, :, :2]) - compute_trajectory_angles(x_st_t_pre[:, :, :2])).pow(2).mean()
+            loss += gen_coef * angle_objective
+        if hyperparams['gen_distance_obj'] == 'yes':
+            distance_objective = (compute_trajectory_distance(x_st_t[:, :, :2]) - compute_trajectory_distance(x_st_t_pre[:, :, :2])).pow(2).mean()
+            loss += gen_coef * distance_objective
         # If loss is nan it means that we will have grad nan => skip generation time loss
+        # Smarter TODO: reject majority samples that already have nan values in x_st_t input
         if torch.isnan(loss).item():
-            # Smarter reject majority samples that already have nan values in x_st_t
             import pdb; pdb.set_trace()
             break
         grad_vals = torch.autograd.grad(loss, [x_st_t_o, *combined_neighbors])
@@ -680,11 +685,15 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
     return inputs, correct
 
 
-def train_net(trajectron, trajectron_g, node_type, criterion, coef, optimizer, lr_scheduler, inputs_orig_tuple,
+def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs_orig_tuple,
               targets_orig, gen_idx, gen_targets, top_n, hyperparams, device):
 
     horizon = hyperparams['prediction_horizon']
-
+    coef = hyperparams['main_coef']
+    if hyperparams['coef_schedule'] != "":
+        coef = 2 * top_n
+    if criterion.weight is not None:
+        coef = coef * 1000
     class_gen_batch = {k: 0 for k in hyperparams['class_count_dic'].keys()}
     class_loss_batch = {k: 0 for k in hyperparams['class_count_dic'].keys()}
     class_acc_batch = {k: 0 for k in hyperparams['class_count_dic'].keys()}
@@ -727,7 +736,7 @@ def train_net(trajectron, trajectron_g, node_type, criterion, coef, optimizer, l
     assert torch.any(torch.isnan(seed_inputs[3])).item() == False, "NaN gradient risk in generation process"
     # ! Now we have sampled seed classes k0 of initial point x0 given gen_target class k.
     gen_inputs, correct_mask = generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_targets, gen_targets,
-                                          p_accept, hyperparams['gamma'], hyperparams['lam'], hyperparams['step_size'], True, hyperparams['attack_iter'])
+                                          p_accept, hyperparams['gamma'], hyperparams['lam'], hyperparams['step_size'], hyperparams, True, hyperparams['attack_iter'])
     num_gen = sum_tensor(correct_mask)
 
     # TODO Add possibility to extend the batch with generated samples
@@ -837,7 +846,7 @@ def train_net(trajectron, trajectron_g, node_type, criterion, coef, optimizer, l
         success, class_gen_batch, class_loss_batch, class_acc_batch, batch_gen_inputs, batch_gen_outputs, batch_orig_inputs, batch_orig_outputs
 
 
-def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type, optimizer, lr_scheduler, criterion, coef,
+def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type, optimizer, lr_scheduler, criterion,
                     train_data_loader, hyperparams, log_writer, save_gen_dir, device):
 
     N_SAMPLES_PER_CLASS_T = torch.Tensor(hyperparams['class_count']).to(device)
@@ -845,11 +854,10 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
     trajectron.model_registrar.train()
 
     results = dict()
-    if criterion.weight is not None:
-        coef = coef**3
+
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
-        pbar = tqdm(data_loader, ncols=150, position=0, leave=True)
+        pbar = tqdm(data_loader, ncols=180, position=0, leave=True)
         oth_loss, gen_loss = 0, 0
         correct_oth = 0
         correct_gen = 0
@@ -882,7 +890,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
             gen_targets = targets[gen_index]
             original_count_stats = {k: (targets == k).sum().item() for k in range(hyperparams['num_classes'])}
             classification_loss, regression_loss, joint_loss, t_loss, g_loss, num_others, num_correct, num_gen, num_gen_correct, p_g_orig_batch, p_g_targ_batch, success, class_gen_batch, class_loss_batch, class_acc_batch, gen_in, gen_out, orig_in, orig_out = train_net(
-                trajectron, trajectron_g, node_type, criterion, coef, optimizer, lr_scheduler, inputs, targets, gen_index, gen_targets, top_n, hyperparams, device)
+                trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs, targets, gen_index, gen_targets, top_n, hyperparams, device)
             # Count for the modified batch
             loss_epoch["classification"].append(classification_loss.unsqueeze(0))
             loss_epoch["regression"].append(regression_loss.unsqueeze(0))
@@ -968,7 +976,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
         log_writer.add_scalar(f"{node_type}/classification_f/train/regression_loss", loss["regression"].mean(), epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/classification_loss", loss["classification"].mean(), epoch)
         log_writer.add_scalar(f"{node_type}/joint_training/train/loss", loss["joint"].mean(), epoch)
-        log_writer.add_scalar(f"{node_type}/joint_training/train/coef", coef, epoch)
+        # log_writer.add_scalar(f"{node_type}/joint_training/train/coef", coef, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/oth_loss", oth_loss / total_oth, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/gen_loss", gen_loss / total_gen, epoch)
         log_writer.add_scalar(f"{node_type}/classification_f/train/train_acc", 100 * results[node_type]['acc'], epoch)

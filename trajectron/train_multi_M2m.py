@@ -3,8 +3,9 @@ import os
 import pathlib
 import random
 import time
-from datetime import datetime
 import warnings
+from datetime import datetime
+from shutil import copyfile
 
 import dill
 import matplotlib.pyplot as plt
@@ -16,7 +17,6 @@ from tensorboardX import SummaryWriter
 from torch import log, nn, optim, utils
 from torch.utils.data.sampler import Sampler
 from tqdm import tqdm
-from shutil import copyfile
 
 import evaluation
 import visualization
@@ -178,6 +178,11 @@ if __name__ == '__main__':
     hyperparams['non_linearity'] = 'none'
     hyperparams['data_loader_sampler'] = 'random'
     hyperparams['append_gen'] = 'yes'
+    hyperparams['main_coef'] = 50
+    hyperparams['gen_coef'] = 0.8
+    hyperparams['gen_angular_obj'] = 'yes'
+    hyperparams['gen_distance_obj'] = 'yes'
+
     # ! Override hyperparameters
     # hyperparams['learning_rate_style'] = 'cosannw'
     # hyperparams['learning_rate'] = 0.01  # Override lr
@@ -347,11 +352,15 @@ if __name__ == '__main__':
     cls_generated, cls_accuracies, cls_losses, losses = [], [], [], []
     top_n = hyperparams['num_hyp']
     start_at = 0
+    hyperparams['coef_schedule'] = "2*topn"
+    hyperparams['topn_schedule'] = []
+    hyperparams['topn_schedule'].append(top_n)
     if args.net_trajectron_ts:
         start_at = int(args.net_trajectron_ts)
     for epoch in range(start_at + 1, start_at + args.train_epochs + 1):
         if epoch >= 45 and epoch % 45 == 0:
             top_n = max(top_n // 2, 1)  # top_n 20 (0:45) - 10: (45:90) - 5: (90:135) - 2: (135:180)- 1: (180:225)
+            hyperparams['topn_schedule'].append(top_n)
         print(f"top n: {top_n}")
         model_registrar.to(args.device)
         train_dataset.augment = args.augment
@@ -362,19 +371,20 @@ if __name__ == '__main__':
             print("**** Train Epoch with generation ****")
             # Generation process and training with generated data
             train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
-                                                                            100, train_data_loader, hyperparams, log_writer, save_gen_dir, args.device)
+                                                                            train_data_loader, hyperparams, log_writer, save_gen_dir, args.device)
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
             print("**** Train Epoch without generation ****")
 
             # if epoch <= 300:
             # epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
-            #                                          100, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
+            #                                          train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
             # else:
             class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
-                                                100, train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
-        # if epoch >= 225:
-        #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=class_weights)
+                                                train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
+        if epoch > 225:
+            hyperparams['weight_in_ce'] = ">225"
+            criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=class_weights)
 
         if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
             validation_metrics(model=trajectron, criterion=criterion_2,
