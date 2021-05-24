@@ -46,8 +46,8 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
         coef = 2 * top_n
 
     if criterion.weight is not None:
-        coef = coef * 1000  # 1000000
-
+        coef = coef * 1e2
+    print(f"Using {coef}*CE+EWTA Loss")
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
         loss_epoch = {"classification": [], "regression": [], "joint": []}
@@ -201,6 +201,7 @@ def train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_s
     coef = hyperparams['main_coef']
     if hyperparams['coef_schedule'] != "":
         coef = 2 * top_n
+    print(f"Using {coef}*CONLOSS+EWTA Loss")
 
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
@@ -685,15 +686,11 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
     return inputs, correct
 
 
-def train_net(trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs_orig_tuple,
+def train_net(trajectron, trajectron_g, node_type, criterion, coef, optimizer, lr_scheduler, inputs_orig_tuple,
               targets_orig, gen_idx, gen_targets, top_n, hyperparams, device):
 
     horizon = hyperparams['prediction_horizon']
-    coef = hyperparams['main_coef']
-    if hyperparams['coef_schedule'] != "":
-        coef = 2 * top_n
-    if criterion.weight is not None:
-        coef = coef * 1000
+
     class_gen_batch = {k: 0 for k in hyperparams['class_count_dic'].keys()}
     class_loss_batch = {k: 0 for k in hyperparams['class_count_dic'].keys()}
     class_acc_batch = {k: 0 for k in hyperparams['class_count_dic'].keys()}
@@ -857,7 +854,12 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
 
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
-        pbar = tqdm(data_loader, ncols=180, position=0, leave=True)
+        coef = hyperparams['main_coef']
+        if hyperparams['coef_schedule'] != "":
+            coef = 2 * top_n
+        if criterion.weight is not None:
+            coef = coef * 1e2
+        print(f"Using {coef}*CE+EWTA Loss")
         oth_loss, gen_loss = 0, 0
         correct_oth = 0
         correct_gen = 0
@@ -869,11 +871,11 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
         class_acc = {k: [] for k in hyperparams['class_count_dic'].keys()}
         loss_epoch = {"classification": [], "regression": [], "joint": []}
         correct_epoch = 0
-
         gen_ins = []
         gen_outs = []
         orig_ins = []
         orig_outs = []
+        pbar = tqdm(data_loader, ncols=180, position=0, leave=True)
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
             inputs = batch[:-2]
@@ -890,7 +892,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
             gen_targets = targets[gen_index]
             original_count_stats = {k: (targets == k).sum().item() for k in range(hyperparams['num_classes'])}
             classification_loss, regression_loss, joint_loss, t_loss, g_loss, num_others, num_correct, num_gen, num_gen_correct, p_g_orig_batch, p_g_targ_batch, success, class_gen_batch, class_loss_batch, class_acc_batch, gen_in, gen_out, orig_in, orig_out = train_net(
-                trajectron, trajectron_g, node_type, criterion, optimizer, lr_scheduler, inputs, targets, gen_index, gen_targets, top_n, hyperparams, device)
+                trajectron, trajectron_g, node_type, criterion, coef, optimizer, lr_scheduler, inputs, targets, gen_index, gen_targets, top_n, hyperparams, device)
             # Count for the modified batch
             loss_epoch["classification"].append(classification_loss.unsqueeze(0))
             loss_epoch["regression"].append(regression_loss.unsqueeze(0))

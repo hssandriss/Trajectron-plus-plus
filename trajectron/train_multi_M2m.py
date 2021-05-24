@@ -179,7 +179,7 @@ if __name__ == '__main__':
     hyperparams['data_loader_sampler'] = 'random'
     hyperparams['append_gen'] = 'yes'
     hyperparams['main_coef'] = 50
-    hyperparams['gen_coef'] = 0.8
+    hyperparams['gen_coef'] = 1
     hyperparams['gen_angular_obj'] = 'yes'
     hyperparams['gen_distance_obj'] = 'yes'
 
@@ -352,7 +352,9 @@ if __name__ == '__main__':
     cls_generated, cls_accuracies, cls_losses, losses = [], [], [], []
     top_n = hyperparams['num_hyp']
     start_at = 0
-    hyperparams['coef_schedule'] = "2*topn"
+    hyperparams['coef_schedule'] = ""
+    if hyperparams['coef_schedule'] == "":
+        print(f"Using fixed coef {hyperparams['main_coef']}")
     hyperparams['topn_schedule'] = []
     hyperparams['topn_schedule'].append(top_n)
     if args.net_trajectron_ts:
@@ -382,8 +384,8 @@ if __name__ == '__main__':
             # else:
             class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
                                                 train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
-        if epoch > 225:
-            hyperparams['weight_in_ce'] = ">225"
+        if epoch > 240:
+            hyperparams['weight_in_ce'] = ">240 => coef*1e2"
             criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=class_weights)
 
         if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
