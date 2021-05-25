@@ -171,7 +171,7 @@ if __name__ == '__main__':
     hyperparams['num_classes'] = len(hyperparams['class_count_dic'])
     # ! M2m hyperparameters
     hyperparams['beta'] = 0.9  # (0.9, 0.99, 0.999) Lower -> bigger p accept
-    hyperparams['gamma'] = 0.75  # (0.9, 0.99) Lower -> bigger p accept
+    hyperparams['gamma'] = 0.8  # (0.9, 0.99) Lower -> bigger p accept
     hyperparams['lam'] = 0.1  # (0.01, 0.1, 0.5) Lower -> bigger p accept
     hyperparams['step_size'] = 0.1
     hyperparams['attack_iter'] = 10
@@ -179,7 +179,7 @@ if __name__ == '__main__':
     hyperparams['data_loader_sampler'] = 'random'
     hyperparams['append_gen'] = 'yes'
     hyperparams['main_coef'] = 50
-    hyperparams['gen_coef'] = 1
+    hyperparams['gen_coef'] = 1.2
     hyperparams['gen_angular_obj'] = 'yes'
     hyperparams['gen_distance_obj'] = 'yes'
 
@@ -384,9 +384,9 @@ if __name__ == '__main__':
             # else:
             class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
                                                 train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
-        if epoch > 240:
-            hyperparams['weight_in_ce'] = ">240 => coef*1e2"
-            criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=class_weights)
+        # if epoch > 240:
+        #     hyperparams['weight_in_ce'] = ">240 => coef*1e2"
+        #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=class_weights)
 
         if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
             validation_metrics(model=trajectron, criterion=criterion_2,
