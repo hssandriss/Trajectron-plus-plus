@@ -179,8 +179,8 @@ if __name__ == '__main__':
     hyperparams['data_loader_sampler'] = 'random'
     hyperparams['append_gen'] = 'yes'
     hyperparams['main_coef'] = 50
-    hyperparams['gen_coef'] = 1.2
-    hyperparams['gen_angular_obj'] = 'yes'
+    hyperparams['gen_coef'] = 1
+    hyperparams['gen_angular_obj'] = 'no'
     hyperparams['gen_distance_obj'] = 'yes'
 
     # ! Override hyperparameters
