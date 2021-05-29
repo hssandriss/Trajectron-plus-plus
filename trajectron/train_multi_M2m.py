@@ -122,6 +122,8 @@ if __name__ == '__main__':
     if not args.debug:
         # Create the log and model directiory if they're not present.
         if not args.gen:
+            if not args.experiment:
+                args.experiment = "models_Multi_hyp" + datetime.now().strftime("%d_%m_%Y-%H_%M") + "_univ_ar3"
             model_dir = os.path.join(args.log_dir, args.experiment, model_tag)
             pathlib.Path(model_dir).mkdir(parents=True, exist_ok=True)
         else:
@@ -131,8 +133,8 @@ if __name__ == '__main__':
             json.dump(hyperparams, conf_json)
 
         log_writer = SummaryWriter(log_dir=model_dir)
-
     print(model_dir)
+
     # Load training and evaluation environments and scenes
     train_scenes = []
     train_data_path = os.path.join(args.data_dir, args.train_data_dict)
@@ -180,8 +182,9 @@ if __name__ == '__main__':
     hyperparams['append_gen'] = 'yes'
     hyperparams['main_coef'] = 50
     hyperparams['gen_coef'] = 1
-    hyperparams['gen_angular_obj'] = 'no'
+    hyperparams['gen_angular_obj'] = 'yes'
     hyperparams['gen_distance_obj'] = 'yes'
+    hyperparams['gen_edges'] = 'no'
 
     # ! Override hyperparameters
     # hyperparams['learning_rate_style'] = 'cosannw'
@@ -382,10 +385,12 @@ if __name__ == '__main__':
             # epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
             #                                          train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
             # else:
-            class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
-                                                train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
-        # if epoch > 240:
-        #     hyperparams['weight_in_ce'] = ">240 => coef*1e2"
+            class_acc, class_loss = train_joint_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
+                                                      train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
+            # class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
+            #                                     train_data_loader, epoch, hyperparams, log_writer, args.device)
+        # if epoch > 200:
+        #     hyperparams['weight_in_ce'] = ">200"
         #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=class_weights)
 
         if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:

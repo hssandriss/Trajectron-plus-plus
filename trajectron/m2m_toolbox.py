@@ -35,8 +35,8 @@ class bcolors:
     UNDERLINE = '\033[4m'
 
 
-def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
-                train_data_loader, epoch, top_n, hyperparams, log_writer, device):
+def train_joint_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+                      train_data_loader, epoch, top_n, hyperparams, log_writer, device):
 
     trajectron.model_registrar.train()
 
@@ -141,6 +141,94 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
         print("Accuracy per class: ")
         print(bcolors.OKGREEN + str({k: round(ret_class_acc[k], 3)
                                      for k in hyperparams['class_count_dic'].keys()}) + bcolors.ENDC)
+    return ret_class_acc, ret_class_loss
+
+
+def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion,
+                train_data_loader, epoch, hyperparams, log_writer, device):
+
+    trajectron.model_registrar.train()
+    horizon = hyperparams['prediction_horizon']
+
+    for node_type, data_loader in train_data_loader.items():
+        curr_iter = curr_iter_node_type[node_type]
+        loss_epoch = {"classification": []}
+        correct_epoch = 0
+        class_loss = {k: [] for k in hyperparams['class_count_dic'].keys()}
+        class_correct = {k: 0 for k in hyperparams['class_count_dic'].keys()}
+        class_count_sampled = {k: 0 for k in hyperparams['class_count_dic'].keys()}
+        log_writer.add_scalar(f"{node_type}/classification/train/lr_scheduling",
+                              lr_scheduler[node_type].state_dict()['_last_lr'][0], epoch)
+        pbar = tqdm(data_loader, ncols=120)
+        for batch in pbar:
+            trajectron.set_curr_iter(curr_iter)
+            optimizer[node_type].zero_grad()
+            inputs = batch[:-2]
+            targets = batch[-2]
+            targets = targets.to(device)
+            # inputs_shape =[x[i].shape for i in range(5)]
+            # some inputs have nan values in x_st_t (inputs[3]) torch.isnan(inputs[3]).sum(2).sum(1).nonzero()
+            inputs = trajectron.preprocess_edges(inputs, node_type)
+            y_hat, hypothesis, features = trajectron.predict(inputs, horizon, node_type, mode=ModeKeys.TRAIN)
+            # if torch.isnan(y_hat).nonzero().sum() > 0:
+            #     import pdb; pdb.set_trace()
+            train_loss = criterion(y_hat, targets)
+
+            pbar.set_description(
+                f"Epoch {epoch}, {node_type}, C-L: {train_loss.mean().item():.2f}")
+            train_loss.mean().backward()
+            # Clipping gradients.
+            if hyperparams['grad_clip'] is not None:
+                nn.utils.clip_grad_value_(trajectron.model_registrar.parameters(), hyperparams['grad_clip'])
+            optimizer[node_type].step()
+            # Stepping forward the learning rate scheduler and annealers.
+            # Per class metrics
+            predicted = torch.argmax(F.softmax(y_hat, 1), 1)
+            loss_epoch["classification"].append(train_loss.mean().clone().detach().unsqueeze(0))  # [[bs, 1], [bs, 1]...]
+
+            correct_epoch += (predicted == targets).sum().item()
+            for k in hyperparams['class_count_dic'].keys():
+                k_idx = (targets == k)
+                class_count_sampled[k] += k_idx.sum().item()
+                if k_idx.sum() == 0:
+                    continue
+                else:
+                    k_loss = train_loss[k_idx].clone().detach()
+                    k_targets = targets[k_idx]
+                    k_pred = predicted[k_idx]
+                    k_correct = (k_targets == k_pred).sum().item()
+                    class_loss[k].append(k_loss)
+                    class_correct[k] += k_correct
+            curr_iter += 1
+            lr_scheduler[node_type].step()
+        curr_iter_node_type[node_type] = curr_iter
+        # Logging
+        loss = {}
+        for k in loss_epoch.keys():
+            loss[k] = torch.cat(loss_epoch[k])
+        assert class_count_sampled == hyperparams['class_count_dic'], "You didn't go through all data"
+        log_writer.add_scalar(f"{node_type}/classification/train/loss", loss["classification"].mean().log10().item(), epoch)
+        log_writer.add_scalar(f"{node_type}/classification/train/loss_logarithmic", loss["classification"].mean().item(), epoch)
+        log_writer.add_scalar(f"{node_type}/classification/train/accuracy",
+                              correct_epoch / data_loader.dataset.len, epoch)
+
+        ret_class_acc = {k: class_correct[k] / hyperparams['class_count_dic'][k]
+                         for k in hyperparams['class_count_dic'].keys()}
+        ret_class_loss_log = {k: torch.cat(class_loss[k]).mean().log10().item()
+                              for k in hyperparams['class_count_dic'].keys()}
+        ret_class_loss = {k: torch.cat(class_loss[k]).mean().item()
+                          for k in hyperparams['class_count_dic'].keys()}
+        for k in hyperparams['class_count_dic'].keys():
+            log_writer.add_scalar(f"{node_type}/classification/train/loss_class_{k}", ret_class_loss[k], epoch)
+            log_writer.add_scalar(f"{node_type}/classification/train/loss_logarithmic_{k}",
+                                  ret_class_loss_log[k], epoch)
+            log_writer.add_scalar(f"{node_type}/classification/train/accuracy_class_{k}", ret_class_acc[k], epoch)
+
+        print("Epoch Classification Loss: " + bcolors.OKGREEN + str(round(loss["classification"].mean().item(), 3)
+                                                                    ) + " (" + str(round(loss["classification"].mean().log10().item(), 3)) + ")" + bcolors.ENDC)
+        print("Epoch Accuracy: " + bcolors.OKGREEN + str(round(correct_epoch / data_loader.dataset.len, 3)) + bcolors.ENDC)
+        print("Accuracy per class:" + bcolors.OKGREEN + str({k: round(ret_class_acc[k], 3)
+                                                             for k in hyperparams['class_count_dic'].keys()}) + bcolors.ENDC)
     return ret_class_acc, ret_class_loss
 
 
@@ -585,6 +673,9 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
     trajectron_g.model_registrar.eval()
     criterion = nn.CrossEntropyLoss()
     gen_coef = hyperparams['gen_coef']
+    edge_gen = False
+    if hyperparams['gen_edges'] == 'yes':
+        edge_gen = True
     # How well does g perform initially on seed_inputs/targets ?
     mask_reliable = filter_unreliable(trajectron_g, node_type, 0.8, seed_targets, seed_inputs)
     # We will use x_st_t and preprocessed_edges
@@ -595,48 +686,48 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         for key in preprocessed_edges.keys():  # Edge data
             preprocessed_edges[key][0] = preprocessed_edges[key][0].detach().requires_grad_(False)
             preprocessed_edges[key][1] = preprocessed_edges[key][1].detach().requires_grad_(False)
-    # * Editing the state history while keeping initial and final states fixed
+    # ! Preparing state history while keeping initial and final states fixed
     x_st_t_i = x_st_t[:, 0, :].unsqueeze(1).to(device)
     x_st_t_f = x_st_t[:, -1, :].unsqueeze(1).to(device)
     x_st_t_o = x_st_t[:, 1:-1, :].to(device)
-    # Preparing edges (decomposing the preprocessed edges dict)
-    edge_keys = list(preprocessed_edges.keys())
-    edge_masks = [preprocessed_edges[k][1] for k in preprocessed_edges.keys()]
-    combined_neighbors = [preprocessed_edges[k][0][:, :, :6] for k in preprocessed_edges.keys()]  # [bs, hist_len, state]
+    if edge_gen:
+        # ! Preparing edges (decomposing the preprocessed edges dict)
+        edge_keys = list(preprocessed_edges.keys())
+        edge_masks = [preprocessed_edges[k][1] for k in preprocessed_edges.keys()]
+        combined_neighbors = [preprocessed_edges[k][0][:, :, :6] for k in preprocessed_edges.keys()]  # [bs, hist_len, state]
     # * Random Noise
     if random_start:
-        # * Adding noise just in the middle steps in node history
+        # ! Adding noise just in the middle steps in node history
         random_noise = random_perturb(x_st_t_o, 'normal').to(device)
         x_st_t_o = torch.clamp(x_st_t_o + random_noise, 0, 1)
-        # * Adding noise to node history
-        # random_noise = random_perturb(x_st_t, 'normal').to(device)
-        # x_st_t = torch.clamp(x_st_t + random_noise, 0, 1)
-        # * Adding noise to combined neighbors
-        for i in range(len(combined_neighbors)):
-            # random_noise = random_perturb(combined_neighbors[i], 'l2', 0.5)
-            random_noise = random_perturb(combined_neighbors[i], 'normal').to(device)
-            combined_neighbors[i] = torch.clamp(combined_neighbors[i] + random_noise, 0, 1)
-    # Verification
+        # ! Adding noise to combined neighbors
+        if edge_gen:
+            for i in range(len(combined_neighbors)):
+                # random_noise = random_perturb(combined_neighbors[i], 'l2', 0.5)
+                random_noise = random_perturb(combined_neighbors[i], 'normal').to(device)
+                combined_neighbors[i] = torch.clamp(combined_neighbors[i] + random_noise, 0, 1)
+    # For Verification
     initial_rnn_weights_g = trajectron_g.model_registrar.get_name_match(
         "PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
     initial_rnn_weights_f = trajectron.model_registrar.get_name_match(
         "PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone().data
-    # initial data
+    # ! Saving initial data
     x_st_t_o_pre = x_st_t_o.clone().detach().requires_grad_(False)
     x_st_t_pre = x_st_t.clone().detach().requires_grad_(False)
-    combined_neighbors_pre = combined_neighbors[0].clone().detach().requires_grad_(False)
-    # * Loop for optimizing the objective
+    if edge_gen:
+        combined_neighbors_pre = combined_neighbors[0].clone().detach().requires_grad_(False)
+    # ! Loop for optimizing the objective
     for _ in range(max_iter):
-        # with torch.autograd.set_detect_anomaly(True):
+        # setting requires grad to True
         x_st_t_o = x_st_t_o.clone().detach().requires_grad_(True)
         x_st_t = torch.cat((x_st_t_i, x_st_t_o, x_st_t_f), dim=1).to(device)
-        # x_st_t = x_st_t.clone().detach().requires_grad_(True)
-        combined_neighbors = [tensor.clone().detach().requires_grad_(True) for tensor in combined_neighbors]
-        joint_histories = [torch.cat((x_st_t, tensor), dim=-1) for tensor in combined_neighbors]
-        edge_values = [[joint_histories[i], edge_masks[i]] for i in range(len(edge_masks))]
-        preprocessed_edges = dict(zip(edge_keys, edge_values))
+        if edge_gen:
+            combined_neighbors = [tensor.clone().detach().requires_grad_(True) for tensor in combined_neighbors]
+            joint_histories = [torch.cat((x_st_t, tensor), dim=-1) for tensor in combined_neighbors]
+            edge_values = [[joint_histories[i], edge_masks[i]] for i in range(len(edge_masks))]
+            preprocessed_edges = dict(zip(edge_keys, edge_values))
         inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
-        # Calculating the objective
+        # Forward Pass
         outputs_g, _, _ = trajectron_g.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
         outputs_r, _, _ = trajectron.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
         # M2m original objective
@@ -647,34 +738,33 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         if hyperparams['gen_distance_obj'] == 'yes':
             distance_objective = (compute_trajectory_distance(x_st_t[:, :, :2]) - compute_trajectory_distance(x_st_t_pre[:, :, :2])).pow(2).mean()
             loss += gen_coef * distance_objective
-        # If loss is nan it means that we will have grad nan => skip generation time loss
-        # Smarter TODO: reject majority samples that already have nan values in x_st_t input
-        if torch.isnan(loss).item():
-            import pdb; pdb.set_trace()
-            break
-        grad_vals = torch.autograd.grad(loss, [x_st_t_o, *combined_neighbors])
+        # Computing gradient wrt the input
+        if edge_gen:
+            grad_vals = torch.autograd.grad(loss, [x_st_t_o, *combined_neighbors])
+        else:
+            grad_vals = torch.autograd.grad(loss, [x_st_t_o])
         grad_x_st_t = grad_vals[0]
-        grad_neighbors = grad_vals[1:]
         x_st_t_o = x_st_t_o - make_step(grad_x_st_t, 'l2', step_size)
         x_st_t_o = torch.clamp(x_st_t_o, 0, 1)
-        # x_st_t = x_st_t - make_step(grad_x_st_t, 'l2', step_size)
-        # x_st_t = torch.clamp(x_st_t, 0, 1)
-        for i in range(len(combined_neighbors)):
-            combined_neighbors[i] = combined_neighbors[i] - make_step(grad_neighbors[i], 'l2', step_size)
-            combined_neighbors[i] = torch.clamp(combined_neighbors[i], 0, 1)
-    # * Verification that weights of the network remain unchanged during generation loop
+        if edge_gen:
+            grad_neighbors = grad_vals[1:]
+            for i in range(len(combined_neighbors)):
+                combined_neighbors[i] = combined_neighbors[i] - make_step(grad_neighbors[i], 'l2', step_size)
+                combined_neighbors[i] = torch.clamp(combined_neighbors[i], 0, 1)
+    # Verification that weights of the network remain unchanged during generation loop
     after_rnn_weights_g = trajectron_g.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
     after_rnn_weights_f = trajectron.model_registrar.get_name_match("PEDESTRIAN/node_history_encoder")._modules["0"].weight_ih_l0.clone()
     assert torch.all(initial_rnn_weights_g.eq(after_rnn_weights_g))
     assert torch.all(initial_rnn_weights_f.eq(after_rnn_weights_f))
-    # * Recombining the new input
+    # ! Recombining the new input
     x_st_t = torch.cat((x_st_t_i, x_st_t_o, x_st_t_f), dim=1).to(device)
-    joint_histories = [torch.cat((x_st_t, tensor), dim=-1).to(device) for tensor in combined_neighbors]
-    edge_values = [[joint_histories[i], edge_masks[i]] for i in range(len(edge_masks))]
-    preprocessed_edges = dict(zip(edge_keys, edge_values))
+    if edge_gen:
+        joint_histories = [torch.cat((x_st_t, tensor), dim=-1).to(device) for tensor in combined_neighbors]
+        edge_values = [[joint_histories[i], edge_masks[i]] for i in range(len(edge_masks))]
+        preprocessed_edges = dict(zip(edge_keys, edge_values))
     inputs = (first_history_index, x_t, y_t, x_st_t, y_st_t, preprocessed_edges, robot_traj_st_t, map)
     inputs = detach_batch_input(inputs)
-    # Inputs now has the new values (verified)
+    # ! Acceptance criterion
     outputs_g, _, _ = trajectron_g.predict(inputs, 1, node_type, mode=ModeKeys.EVAL)
     one_hot = torch.zeros_like(outputs_g)
     one_hot.scatter_(1, gen_targets.view(-1, 1), 1)
