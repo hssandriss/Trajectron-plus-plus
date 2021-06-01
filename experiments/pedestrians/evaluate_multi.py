@@ -1,5 +1,6 @@
 import argparse
 import json
+import math
 import os
 import sys
 
@@ -7,13 +8,12 @@ import dill
 import numpy as np
 import pandas as pd
 import torch
+from tqdm import tqdm
 
 sys.path.append("../../trajectron")
-import math
 
 import evaluation
 from model.model_registrar import ModelRegistrar
-from tqdm import tqdm
 from utils import prediction_output_to_trajectories
 
 seed = 0
@@ -34,7 +34,7 @@ parser.add_argument("--scores_dir", help="scores path", type=str)
 args = parser.parse_args()
 
 
-def load_model(model_dir, env, ldam ,ts=100):
+def load_model(model_dir, env, ldam, ts=100):
     model_registrar = ModelRegistrar(model_dir, 'cpu')
     model_registrar.load_models(ts)
     with open(os.path.join(model_dir, 'config.json'), 'r') as config_json:
@@ -43,17 +43,18 @@ def load_model(model_dir, env, ldam ,ts=100):
 
     if ldam == "yes":
         class_count_dict = [{0: 25130, 1: 10805, 2: 1861}]
-        borders = [2,6] 
+        borders = [2, 6]
         # [[0, 1, 2], [3, 4, 5, 6], [7 .. 32]]
-        trajectron = Trajectron(model_registrar, hyperparams, None, 'cpu', class_count_dict= class_count_dict)
+        trajectron = Trajectron(model_registrar, hyperparams, None, 'cpu', class_count_dict=class_count_dict)
     else:
         class_count_dict = [{0: 25130, 1: 10805, 2: 1861}]
-        borders = [2,6] 
+        borders = [2, 6]
         trajectron = Trajectron(model_registrar, hyperparams, None, 'cpu')
 
     trajectron.set_environment(env)
-    #trajectron.set_annealing_params()
+    # trajectron.set_annealing_params()
     return trajectron, hyperparams, borders
+
 
 def get_class_label(epe, borders, nb_classes):
     '''
@@ -66,9 +67,10 @@ def get_class_label(epe, borders, nb_classes):
         if borders[i] > epe:
             label = i
             break
-    if label == None :
-        label =  nb_classes - 1   
+    if label == None:
+        label = nb_classes - 1
     return label
+
 
 def get_kalman_filter_result(history):
     # history has shape [8, 2]
@@ -145,8 +147,8 @@ def get_kalman_filter_result(history):
     # predict into the future
     x_x[k + 1] = x_x[k] + v_x * 12
     x_y[k + 1] = x_y[k] + v_y * 12
-    P_x[k + 1] = P_x[k] + P_vx[k] * 12*12 + Q
-    P_y[k + 1] = P_y[k] + P_vy[k] * 12*12 + Q
+    P_x[k + 1] = P_x[k] + P_vx[k] * 12 * 12 + Q
+    P_y[k + 1] = P_y[k] + P_vy[k] * 12 * 12 + Q
     P_vx[k + 1] = P_vx[k] + Q
     P_vy[k + 1] = P_vy[k] + Q
 
@@ -155,11 +157,13 @@ def get_kalman_filter_result(history):
     z_future[1] = x_y[k + 1]
     return z_future
 
+
 def calculate_epe(pred, gt):
     diff_x = (gt[0] - pred[0]) * (gt[0] - pred[0])
     diff_y = (gt[1] - pred[1]) * (gt[1] - pred[1])
-    epe = math.sqrt(diff_x+diff_y)
+    epe = math.sqrt(diff_x + diff_y)
     return epe
+
 
 def get_eval_percent(eval_ade_batch_errors, eval_fde_batch_errors, eval_kde_nll, percent_idx, current_epe_list, predictions):
     if len(percent_idx) == 0:
@@ -170,7 +174,7 @@ def get_eval_percent(eval_ade_batch_errors, eval_fde_batch_errors, eval_kde_nll,
         curr_iter_percent_idx = 0
         done = 0
         while curr_iter_percent_idx < len(percent_idx):
-            for k,v in predictions.items():
+            for k, v in predictions.items():
                 if isinstance(v, dict):
                     for k1, v1 in v.items():
                         if curr_iter == percent_idx[curr_iter_percent_idx]:
@@ -180,7 +184,9 @@ def get_eval_percent(eval_ade_batch_errors, eval_fde_batch_errors, eval_kde_nll,
                                 predictions_new[k] = {}
                             predictions_new[k][k1] = v1
                             done += 1
-                            curr_iter_percent_idx += 1 
+                            curr_iter_percent_idx += 1
+                        if curr_iter_percent_idx == len(percent_idx):
+                            break
                         curr_iter += 1
 
                 else:
@@ -191,29 +197,30 @@ def get_eval_percent(eval_ade_batch_errors, eval_fde_batch_errors, eval_kde_nll,
                             predictions_new[k] = {}
                         predictions_new[k][k1] = v1
                         done += 1
-                        curr_iter_percent_idx += 1 
+                        curr_iter_percent_idx += 1
                     curr_iter += 1
+                    if curr_iter_percent_idx == len(percent_idx):
+                        break
+                if curr_iter_percent_idx == len(percent_idx):
+                    break
         assert (done == len(percent_idx))
         batch_error_dict = evaluation.compute_batch_statistics(predictions_new,
-                                                                scene.dt,
-                                                                max_hl=max_hl,
-                                                                ph=ph,
-                                                                node_type_enum=env.NodeType,
-                                                                map=None,
-                                                                best_of=True,
-                                                                prune_ph_to_future=True)
+                                                               scene.dt,
+                                                               max_hl=max_hl,
+                                                               ph=ph,
+                                                               node_type_enum=env.NodeType,
+                                                               map=None,
+                                                               best_of=True,
+                                                               prune_ph_to_future=True)
         eval_ade_batch_errors = np.hstack((eval_ade_batch_errors, batch_error_dict[args.node_type]['ade']))
         eval_fde_batch_errors = np.hstack((eval_fde_batch_errors, batch_error_dict[args.node_type]['fde']))
         eval_kde_nll = np.hstack((eval_kde_nll, batch_error_dict[args.node_type]['kde']))
         return eval_ade_batch_errors, eval_fde_batch_errors, eval_kde_nll
-        
 
-
-                
 
 if __name__ == "__main__":
     nb_classes = 3
-    if args.ldam == "yes" :
+    if args.ldam == "yes":
         from model.trajectron_multi_ldam import Trajectron
         joint_train = True
     else:
@@ -221,7 +228,7 @@ if __name__ == "__main__":
         joint_train = False
     with open(args.data, 'rb') as f:
         env = dill.load(f, encoding='latin1')
-    
+
     eval_stg, hyperparams, borders = load_model(args.model, env, args.ldam, ts=args.checkpoint)
     if 'override_attention_radius' in hyperparams:
         for attention_radius_override in hyperparams['override_attention_radius']:
@@ -233,10 +240,10 @@ if __name__ == "__main__":
     with open(os.path.join(args.scores_dir, '%s_kalman.pkl' % env_name), 'rb') as f:
         scores = dill.load(f)
     scores_sorted = np.sort(scores)
-    hardest_1_percent = scores_sorted[-int(len(scores_sorted) /100)] 
-    hardest_3_percent = scores_sorted[-int(len(scores_sorted) /100)*3] 
-    hardest_5_percent = scores_sorted[-int(len(scores_sorted) /100)*5]
-    
+    hardest_1_percent = scores_sorted[-int(len(scores_sorted) / 100)]
+    hardest_3_percent = scores_sorted[-int(len(scores_sorted) / 100) * 3]
+    hardest_5_percent = scores_sorted[-int(len(scores_sorted) / 100) * 5]
+
     print("-- Preparing Node Graph")
     for scene in tqdm(scenes):
         scene.calculate_scene_graph(env.attention_radius,
@@ -276,38 +283,38 @@ if __name__ == "__main__":
             for t in tqdm(range(0, scene.timesteps, 10)):
                 timesteps = np.arange(t, t + 10)
                 if args.ldam == "yes":
-                    predictions,features, predictions_cl = eval_stg.predict(scene,
-                                                timesteps,
-                                                ph,
-                                                joint_train = joint_train,
-                                                num_samples=20,
-                                                min_history_timesteps=7,
-                                                min_future_timesteps=12,
-                                                z_mode=False,
-                                                gmm_mode=False,
-                                                full_dist=False)
+                    predictions, features, predictions_cl = eval_stg.predict(scene,
+                                                                             timesteps,
+                                                                             ph,
+                                                                             joint_train=joint_train,
+                                                                             num_samples=20,
+                                                                             min_history_timesteps=7,
+                                                                             min_future_timesteps=12,
+                                                                             z_mode=False,
+                                                                             gmm_mode=False,
+                                                                             full_dist=False)
 
                     if not predictions:
                         continue
                     predictions_cl_list.append(predictions_cl)
                 else:
-                    predictions,features = eval_stg.predict(scene,
-                                               timesteps,
-                                               ph,
-                                               num_samples=20,
-                                               min_history_timesteps=7,
-                                               min_future_timesteps=12,
-                                               z_mode=False,
-                                               gmm_mode=False,
-                                               full_dist=False)
+                    predictions, features = eval_stg.predict(scene,
+                                                             timesteps,
+                                                             ph,
+                                                             num_samples=20,
+                                                             min_history_timesteps=7,
+                                                             min_future_timesteps=12,
+                                                             z_mode=False,
+                                                             gmm_mode=False,
+                                                             full_dist=False)
 
                     if not predictions:
                         continue
                 (prediction_dict, histories_dict, futures_dict) = prediction_output_to_trajectories(predictions,
-                                                                                                scene.dt,
-                                                                                                max_hl,
-                                                                                                ph,
-                                                                                                prune_ph_to_future=True)
+                                                                                                    scene.dt,
+                                                                                                    max_hl,
+                                                                                                    ph,
+                                                                                                    prune_ph_to_future=True)
 
                 for t in prediction_dict.keys():
                     for node in prediction_dict[t].keys():
@@ -317,26 +324,29 @@ if __name__ == "__main__":
                         current_epe_list.append(epe)
                         epes.append(get_class_label(epe, borders, nb_classes))
                         current_epes.append(get_class_label(epe, borders, nb_classes))
-                
-                one_percent_idx = np.where(np.array(current_epe_list)>=hardest_1_percent)[0]
-                three_percent_idx = np.where(np.array(current_epe_list)>=hardest_3_percent)[0]
-                five_percent_idx = np.where(np.array(current_epe_list)>=hardest_5_percent)[0]
-                                
-                batch_error_dict, batch_error_dict_details = evaluation.compute_batch_statistics_classes(predictions,
-                                                                    scene.dt,
-                                                                    current_epes,
-                                                                    nb_classes,
-                                                                    max_hl=max_hl,
-                                                                    ph=ph,
-                                                                    node_type_enum=env.NodeType,
-                                                                    map=None,
-                                                                    best_of=True,
-                                                                    prune_ph_to_future=True)
 
-                eval_ade_batch_errors_1_percent, eval_fde_batch_errors_1_percent, eval_kde_nll_1_percent =  get_eval_percent(eval_ade_batch_errors_1_percent, eval_fde_batch_errors_1_percent, eval_kde_nll_1_percent, one_percent_idx, current_epe_list, predictions) 
-                eval_ade_batch_errors_3_percent, eval_fde_batch_errors_3_percent, eval_kde_nll_3_percent = get_eval_percent(eval_ade_batch_errors_3_percent, eval_fde_batch_errors_3_percent, eval_kde_nll_3_percent, three_percent_idx, current_epe_list, predictions)
-                eval_ade_batch_errors_5_percent, eval_fde_batch_errors_5_percent, eval_kde_nll_5_percent = get_eval_percent(eval_ade_batch_errors_5_percent, eval_fde_batch_errors_5_percent, eval_kde_nll_5_percent, five_percent_idx, current_epe_list, predictions)
-                
+                one_percent_idx = np.where(np.array(current_epe_list) >= hardest_1_percent)[0]
+                three_percent_idx = np.where(np.array(current_epe_list) >= hardest_3_percent)[0]
+                five_percent_idx = np.where(np.array(current_epe_list) >= hardest_5_percent)[0]
+
+                batch_error_dict, batch_error_dict_details = evaluation.compute_batch_statistics_classes(predictions,
+                                                                                                         scene.dt,
+                                                                                                         current_epes,
+                                                                                                         nb_classes,
+                                                                                                         max_hl=max_hl,
+                                                                                                         ph=ph,
+                                                                                                         node_type_enum=env.NodeType,
+                                                                                                         map=None,
+                                                                                                         best_of=True,
+                                                                                                         prune_ph_to_future=True)
+
+                eval_ade_batch_errors_1_percent, eval_fde_batch_errors_1_percent, eval_kde_nll_1_percent = get_eval_percent(
+                    eval_ade_batch_errors_1_percent, eval_fde_batch_errors_1_percent, eval_kde_nll_1_percent, one_percent_idx, current_epe_list, predictions)
+                eval_ade_batch_errors_3_percent, eval_fde_batch_errors_3_percent, eval_kde_nll_3_percent = get_eval_percent(
+                    eval_ade_batch_errors_3_percent, eval_fde_batch_errors_3_percent, eval_kde_nll_3_percent, three_percent_idx, current_epe_list, predictions)
+                eval_ade_batch_errors_5_percent, eval_fde_batch_errors_5_percent, eval_kde_nll_5_percent = get_eval_percent(
+                    eval_ade_batch_errors_5_percent, eval_fde_batch_errors_5_percent, eval_kde_nll_5_percent, five_percent_idx, current_epe_list, predictions)
+
                 eval_ade_batch_errors = np.hstack((eval_ade_batch_errors, batch_error_dict[args.node_type]['ade']))
                 eval_fde_batch_errors = np.hstack((eval_fde_batch_errors, batch_error_dict[args.node_type]['fde']))
                 eval_kde_nll = np.hstack((eval_kde_nll, batch_error_dict[args.node_type]['kde']))
@@ -350,12 +360,12 @@ if __name__ == "__main__":
         epes = np.array(epes)
         for i in range(nb_classes):
             pd.DataFrame({'value': eval_statistics_details[i]['eval_ade_batch_errors'], 'metric': 'ade', 'type': 'best_of'}
-                        ).to_csv(os.path.join(args.output_path, args.output_tag + '_class_'+str(i)+'_ade_best_of.csv'))
+                         ).to_csv(os.path.join(args.output_path, args.output_tag + '_class_' + str(i) + '_ade_best_of.csv'))
             pd.DataFrame({'value': eval_statistics_details[i]['eval_fde_batch_errors'], 'metric': 'fde', 'type': 'best_of'}
-                        ).to_csv(os.path.join(args.output_path, args.output_tag + '_class_'+str(i)+ '_fde_best_of.csv'))
+                         ).to_csv(os.path.join(args.output_path, args.output_tag + '_class_' + str(i) + '_fde_best_of.csv'))
             pd.DataFrame({'value': eval_statistics_details[i]['eval_kde_nll'], 'metric': 'kde', 'type': 'best_of'}
-                        ).to_csv(os.path.join(args.output_path, args.output_tag + '_class_'+str(i)+ '_kde_best_of.csv'))
-            
+                         ).to_csv(os.path.join(args.output_path, args.output_tag + '_class_' + str(i) + '_kde_best_of.csv'))
+
         pd.DataFrame({'value': eval_ade_batch_errors, 'metric': 'ade', 'type': 'best_of'}
                      ).to_csv(os.path.join(args.output_path, args.output_tag + '_ade_best_of.csv'))
         pd.DataFrame({'value': eval_fde_batch_errors, 'metric': 'fde', 'type': 'best_of'}
@@ -363,35 +373,31 @@ if __name__ == "__main__":
         pd.DataFrame({'value': eval_kde_nll, 'metric': 'kde', 'type': 'best_of'}
                      ).to_csv(os.path.join(args.output_path, args.output_tag + '_kde_best_of.csv'))
 
-        
         pd.DataFrame({'value': eval_ade_batch_errors_1_percent, 'metric': 'ade', 'type': 'best_of'}
-                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_1_percent' +'_ade_best_of.csv'))
+                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_1_percent' + '_ade_best_of.csv'))
         pd.DataFrame({'value': eval_ade_batch_errors_1_percent, 'metric': 'fde', 'type': 'best_of'}
-                     ).to_csv(os.path.join(args.output_path,  args.output_tag + '_hardest_1_percent' +'_fde_best_of.csv'))
+                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_1_percent' + '_fde_best_of.csv'))
         pd.DataFrame({'value': eval_ade_batch_errors_1_percent, 'metric': 'kde', 'type': 'best_of'}
-                     ).to_csv(os.path.join(args.output_path,  args.output_tag + '_hardest_1_percent' +'_kde_best_of.csv'))
-        
+                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_1_percent' + '_kde_best_of.csv'))
+
         pd.DataFrame({'value': eval_ade_batch_errors_3_percent, 'metric': 'ade', 'type': 'best_of'}
-                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_3_percent' +'_ade_best_of.csv'))
+                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_3_percent' + '_ade_best_of.csv'))
         pd.DataFrame({'value': eval_ade_batch_errors_3_percent, 'metric': 'fde', 'type': 'best_of'}
-                     ).to_csv(os.path.join(args.output_path, args.output_tag +'_hardest_3_percent' + '_fde_best_of.csv'))
+                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_3_percent' + '_fde_best_of.csv'))
         pd.DataFrame({'value': eval_ade_batch_errors_3_percent, 'metric': 'kde', 'type': 'best_of'}
-                     ).to_csv(os.path.join(args.output_path,  args.output_tag + '_hardest_3_percent' +'_kde_best_of.csv'))
-        
+                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_3_percent' + '_kde_best_of.csv'))
+
         pd.DataFrame({'value': eval_ade_batch_errors_5_percent, 'metric': 'ade', 'type': 'best_of'}
-                     ).to_csv(os.path.join(args.output_path,  args.output_tag + '_hardest_5_percent' +'_ade_best_of.csv'))
+                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_5_percent' + '_ade_best_of.csv'))
         pd.DataFrame({'value': eval_ade_batch_errors_5_percent, 'metric': 'fde', 'type': 'best_of'}
-                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_5_percent'+ '_fde_best_of.csv'))
+                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_5_percent' + '_fde_best_of.csv'))
         pd.DataFrame({'value': eval_ade_batch_errors_5_percent, 'metric': 'kde', 'type': 'best_of'}
-                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_5_percent'+ '_kde_best_of.csv'))
-        
+                     ).to_csv(os.path.join(args.output_path, args.output_tag + '_hardest_5_percent' + '_kde_best_of.csv'))
+
         if args.ldam == 'yes':
             predictions_cl_list = np.hstack(predictions_cl_list)
-            print('accuracy : ', sum(1 for x,y in zip(epes,predictions_cl_list) if x == y) / float(len(epes)))
+            print('accuracy : ', sum(1 for x, y in zip(epes, predictions_cl_list) if x == y) / float(len(epes)))
             for i in range(nb_classes):
-                epe_idx_class =  [j for j, element in enumerate(epes) if element == i]
-                epe_class = epes[epe_idx_class] 
-                print('accuracy of class ',i,' : ', sum(1 for x,y in zip(epe_class,predictions_cl_list[epe_idx_class]) if x == y) / float(len(epe_class)))
-        
-
-        
+                epe_idx_class = [j for j, element in enumerate(epes) if element == i]
+                epe_class = epes[epe_idx_class]
+                print('accuracy of class ', i, ' : ', sum(1 for x, y in zip(epe_class, predictions_cl_list[epe_idx_class]) if x == y) / float(len(epe_class)))
