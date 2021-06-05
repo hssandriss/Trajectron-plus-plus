@@ -208,6 +208,7 @@ def rebalance_3_bins( scores, borders = None):
         dic[i] = 0
     for l in lbls:
         dic[l] += 1
+    lbls_all = lbls.copy()
     if borders == None:
         # train dataset
         class_clusters = []
@@ -260,7 +261,7 @@ def rebalance_3_bins( scores, borders = None):
     assert sum(dic_.values()) == scores.shape[0]
 
     kalman_classes = lbls
-    return kalman_classes, borders
+    return kalman_classes, borders, lbls_all
 
 def load_model(model_dir, env, ts=100):
     model_registrar = ModelRegistrar(model_dir, 'cpu')
@@ -482,23 +483,46 @@ if __name__ == "__main__":
         #with open(args.save_output + '.pkl', 'wb') as f_writer:
         #    dill.dump(kalman_errors, f_writer)
         #kalman_classes, switched_dic = rebalance_bins_train(kalman_errors)
-        kalman_classes, borders_train = rebalance_3_bins(kalman_errors)
-        kalman_classes_test, _ = rebalance_3_bins(kalman_errors_test, borders_train)
+        kalman_classes, borders_train, kalman_classes_all = rebalance_3_bins(kalman_errors)
+        kalman_classes_test, _, kalman_classes_all_test = rebalance_3_bins(kalman_errors_test, borders_train)
         #kalman_classes_test = rebalance_bins_test(kalman_errors_test, switched_dic)
 
         #######################################
         ####      TSNE Representation      ####
         #######################################
         feat_balanced, kalman_classes_balanced = get_feat_balanced(feat, kalman_classes)
+        feat_balanced_all, kalman_classes_balanced_all = get_feat_balanced(feat, kalman_classes_all, 100)
+        feat_balanced_all_test, kalman_classes_balanced_all_test = get_feat_balanced(feat_test, kalman_classes_all_test, 100)
+        
         #feat_balanced_test, kalman_classes_balanced_test = get_feat_balanced(feat, kalman_classes_test)
         #tsne_input = torch.cat((train_feat, val_feat), dim = 0)
         train_idx = len(feat_balanced)
         tsne_input = feat_balanced
         #tsne_input = np.concatenate((feat_balanced, feat_balanced_test), axis = 0)
+        print('---------- histograms ----------')
+        fig = plt.figure(figsize=(8,8))
+        plt.hist(kalman_classes_all, bins = np.arange(np.amax(kalman_classes_all)))
+        plt.savefig(os.path.join(args.model ,args.tagplot+ '_histogramTrain'+'.png'))
+        fig = plt.figure(figsize=(8,8))
+        plt.hist(kalman_classes_all_test, bins = np.arange(np.amax(kalman_classes_all_test)))
+        plt.savefig(os.path.join(args.model ,args.tagplot+ '_histogramTest'+'.png'))
+        
+        print('---------- Weights analysis ----------')
+        weights_to_plot = [ 'model_dict.PEDESTRIAN/decoder/rnn_cell.weight_ih', 'model_dict.PEDESTRIAN/decoder/rnn_cell.weight_hh' ,'model_dict.PEDESTRIAN/decoder/initial_h.weight', 'model_dict.PEDESTRIAN/decoder/initial_mu.weight',  'model_dict.PEDESTRIAN/decoder/proj_to_mus.weight']
+        weights_name = [ 'rnn_cell_ih', 'rnn_cell_hh', 'initial_h', 'initial_mu',  'proj_to_mus']
+        for i in range(len(weights_to_plot)):
+            import pdb; pdb.set_trace()
+            current_weight = eval_stg.model_registrar.state_dict()[weights_to_plot[i]].numpy()
+            fig = plt.figure(figsize=(20,20))
+            plt.matshow(current_weight)
+            plt.savefig(os.path.join(args.model ,args.tagplot+ '_WEIGHTS_'+ weights_name[i]+ '.png'))
+            fig = plt.figure(figsize=(20,20))
+            plt.hist(current_weight)
+            plt.savefig(os.path.join(args.model ,args.tagplot+ '_WEIGHTS_HIST_'+ weights_name[i]+ '.png'))
         
         # metric: default is euclidean, 
         # check perplexity, early_exaggeration, learning_rate
-        print('---------- Start TSNE ----------')
+        print('---------- Start TSNE TRAIN ----------')
         tsne_output = TSNE(n_components=2, init = 'pca').fit_transform(tsne_input)
         #tsne_output_normalized = normalize (tsne_output, axis = 0) # l2 normalization of each feature
         tsne_output_normalized = 2*((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) -1
@@ -532,8 +556,39 @@ if __name__ == "__main__":
 
             plt.legend()
             plt.savefig(os.path.join(args.model ,args.tagplot+ '_class_'+ str(label)+'.png'))
+        
+        
+        tsne_input = feat_balanced_all
+        train_idx = len(tsne_input)
+        tsne_output = TSNE(n_components=2, init = 'pca').fit_transform(tsne_input)
+        #tsne_output_normalized = normalize (tsne_output, axis = 0) # l2 normalization of each feature
+        tsne_output_normalized = 2*((tsne_output - tsne_output.min(0)) / tsne_output.ptp(0)) -1
 
+        tsne_output_train = tsne_output[: train_idx]
+        tsne_output_test = tsne_output[train_idx:]
+
+        plt.cla()
+        plt.scatter(tsne_output_train[:,0], tsne_output_train[:,1], c=kalman_classes_balanced_all, cmap='viridis_r')
+        plt.colorbar()
+        #plt.legend()
+        plt.savefig(os.path.join(args.model ,args.tagplot+ '_train_all'+'.png'))
+        print('---------- Start TSNE Test ----------')
+        fig = plt.figure(figsize=(8,8))
+        tsne_input = feat_balanced_all_test
+        train_idx = len(tsne_input)
+        tsne_output_test = TSNE(n_components=2, init = 'pca').fit_transform(tsne_input)
+        #tsne_output_normalized = normalize (tsne_output, axis = 0) # l2 normalization of each feature
+        tsne_output_normalized_test = 2*((tsne_output_test - tsne_output_test.min(0)) / tsne_output_test.ptp(0)) -1
+
+       
+
+        plt.cla()
+        plt.scatter(tsne_output_test[:,0], tsne_output_test[:,1], c=kalman_classes_balanced_all_test, cmap='viridis_r')
+        plt.colorbar()
+        #plt.legend()
+        plt.savefig(os.path.join(args.model ,args.tagplot+ '_test_all'+'.png'))
         import pdb; pdb.set_trace()
+
         # plt.scatter(tsne_output_normalized[:idx_train_tsne,0], tsne_output_normalized[:idx_train_tsne,1], label='train')
         # plt.scatter(tsne_output_normalized[idx_train_tsne:,0], tsne_output_normalized[idx_train_tsne:,1], label='val')
         # plt.legend(loc="best")
