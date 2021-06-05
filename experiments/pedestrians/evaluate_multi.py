@@ -182,6 +182,8 @@ def get_eval_percent(eval_ade_batch_errors, eval_fde_batch_errors, eval_kde_nll,
                             done += 1
                             curr_iter_percent_idx += 1 
                         curr_iter += 1
+                        if curr_iter_percent_idx == len(percent_idx):
+                            break
 
                 else:
                     if curr_iter == percent_idx[curr_iter_percent_idx]:
@@ -193,6 +195,10 @@ def get_eval_percent(eval_ade_batch_errors, eval_fde_batch_errors, eval_kde_nll,
                         done += 1
                         curr_iter_percent_idx += 1 
                     curr_iter += 1
+                    if curr_iter_percent_idx == len(percent_idx):
+                        break
+                if curr_iter_percent_idx == len(percent_idx):
+                    break
         assert (done == len(percent_idx))
         batch_error_dict = evaluation.compute_batch_statistics(predictions_new,
                                                                 scene.dt,

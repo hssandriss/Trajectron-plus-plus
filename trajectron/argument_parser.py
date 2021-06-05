@@ -204,5 +204,9 @@ parser.add_argument('--nb_bins',
 parser.add_argument('--fix_encoder',
                     help='either fix the encoder weights or not',
                     type=str,
-                    default='no')                
+                    default='no')  
+parser.add_argument('--nb_classes',
+                    help='nb_classes to get from Kalman',
+                    type=int,
+                    default=3)               
 args = parser.parse_args()

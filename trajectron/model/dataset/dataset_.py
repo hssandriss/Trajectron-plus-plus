@@ -1,5 +1,6 @@
 import os
 from copy import deepcopy
+import pdb
 
 import dill
 import numpy as np
@@ -10,7 +11,7 @@ from .preprocessing import get_node_timestep_data
 
 
 class EnvironmentDatasetKalman(object):
-    def __init__(self, env, scores_path, state, pred_state, node_freq_mult, scene_freq_mult, hyperparams, train_borders = None, scores_based = False, **kwargs):
+    def __init__(self, env, scores_path, state, pred_state, node_freq_mult, scene_freq_mult, hyperparams, train_borders = None, scores_based = False, nb_classes = 3, **kwargs):
         self.env = env
         self.state = state
         self.pred_state = pred_state
@@ -27,12 +28,13 @@ class EnvironmentDatasetKalman(object):
         self.train_borders = train_borders
         self.scores_based = scores_based
         self._augment = False
+        self.nb_classes = nb_classes
         self.scores_path = scores_path
         for node_type in env.NodeType:
             if node_type not in hyperparams['pred_state']:
                 continue
             node_type_dataset = NodeTypeDatasetKalman(env, scores_path, node_type, state, pred_state, node_freq_mult,
-                                                scene_freq_mult, self.train_borders, hyperparams, **kwargs)
+                                                scene_freq_mult, self.train_borders, hyperparams, nb_classes, **kwargs)
             self.node_type_datasets.append(node_type_dataset)
             self.kalman_classes.append(node_type_dataset.kalman_classes)
             self.class_count_dict.append(node_type_dataset.class_count_dict)
@@ -57,7 +59,7 @@ class EnvironmentDatasetKalman(object):
 
 class NodeTypeDatasetKalman(data.Dataset):
     def __init__(self, env, scores_path, node_type, state, pred_state, node_freq_mult,
-                 scene_freq_mult, train_borders, hyperparams, binary, augment=False, **kwargs):
+                 scene_freq_mult, train_borders, hyperparams, nb_classes , binary, augment=False, **kwargs):
         self.env = env
         self.state = state
         self.pred_state = pred_state
@@ -76,7 +78,7 @@ class NodeTypeDatasetKalman(data.Dataset):
         self.load_scores()
         #self.rebalance_bins()
         self.train_borders = train_borders
-        self.rebalance_3_bins()
+        self.rebalance_3_bins(nb_classes)
         #import pdb; pdb.set_trace()
 
     def index_env(self, node_freq_mult, scene_freq_mult, **kwargs):
@@ -206,7 +208,7 @@ class NodeTypeDatasetKalman(data.Dataset):
             self.kalman_classes = lbls
             self.class_count_dict = dic_compare
 
-    def rebalance_3_bins(self):
+    def rebalance_3_bins(self, nb_classes = 3):
         # Borders : tuple(int, int) boarders
         # TODO Use 1 spaced clusters
         env_name = self.env.scenes[0].name
@@ -220,9 +222,9 @@ class NodeTypeDatasetKalman(data.Dataset):
             dic[i] = 0
         for l in lbls:
             dic[l] += 1
-        if self.train_borders == None:
+        borders = []
+        if self.train_borders == None and nb_classes ==3:
             class_clusters = []
-            borders = []
             # Stacking the right 0.7 percent into a class
             limits = [0.6, 0.95]
             cumsum = 0
@@ -242,9 +244,9 @@ class NodeTypeDatasetKalman(data.Dataset):
                 else:
                     cumsum += dic[c]
                     current_list.append(c)
-            for c in range(3):
+            for c in range(nb_classes):
                 lbls = np.where((lbls <= class_clusters[c][-1]) & (lbls >= class_clusters[c][0]), c, lbls)
-        else:
+        elif nb_classes == 3:
             # the 2 borders are given
             borders = self.train_borders
             class_clusters = []
@@ -261,8 +263,21 @@ class NodeTypeDatasetKalman(data.Dataset):
                     current_limit += 1
                     current_list = []
             class_clusters.append(current_list)  # incluse
-            for c in range(3):
+            for c in range(nb_classes):
                 lbls = np.where((lbls <= class_clusters[c][-1]) & (lbls >= class_clusters[c][0]), c, lbls)
+        else :
+            curr_k = -1
+            curr_dic = {}
+            for i, (k,v) in enumerate(dic.items()):
+                if v == 0:
+                    pass
+                else: 
+                    curr_k += 1
+                curr_dic[k] = curr_k
+            lbls_ = np.zeros(len(lbls)).astype(int)
+            for i in range(len(lbls)):
+                lbls_[i] = curr_dic[lbls[i]]
+            lbls = lbls_
         # Calculating class values counts after sorting
         dic_ = {}
         for i in range(lbls.max() + 1):
@@ -494,9 +509,19 @@ class NodeTypeDatasetKalmanGroupExperts(data.Dataset):
                         break
                 k += 1
             
-            lbls_bins = np.zeros(len(lbls)).astype(int)
+            lbls_bins = np.zeros(len(lbls)).astype(int)            
+            if env_name == 'univ_train' and self.n_bins == 4:
+                dic_bins = {0: [0,1], 
+                            1: [2, 3], 
+                            2: [4, 5, 6, 7, 8, 9],
+                            3: [10, 11, 12, 13, 15, 16], 
+                            4: [14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27]}
             for c in range(self.n_bins+1):
-                lbls_bins [np.where((lbls <= dic_bins[c][-1]) & (lbls >= dic_bins[c][0]))[0]] = c 
+                #lbls_bins [np.where((lbls <= dic_bins[c][-1]) & (lbls >= dic_bins[c][0]))[0]] = c 
+                for l in range(len(lbls)):
+                    if lbls[l] in dic_bins[c]:
+                        lbls_bins [l] = c 
+                
             self.bin_borders = dic_bins
             
 
@@ -511,8 +536,10 @@ class NodeTypeDatasetKalmanGroupExperts(data.Dataset):
             
             lbls_bins = np.zeros(len(lbls)).astype(int)
             for c in range(self.n_bins+1):
-                lbls_bins [np.where((lbls <= self.bin_borders[c][-1]) & (lbls >= self.bin_borders[c][0]))[0]] = c 
-
+                #lbls_bins [np.where((lbls <= self.bin_borders[c][-1]) & (lbls >= self.bin_borders[c][0]))[0]] = c 
+                for l in range(len(lbls)):
+                    if lbls[l] in self.bin_borders[c]:
+                        lbls_bins [l] = c 
         # Calculating class values counts after sorting
         dic_ = {}
         for i in range(lbls.max() + 1):

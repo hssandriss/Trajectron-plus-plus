@@ -22,7 +22,8 @@ class MultiHypothesisNet(object):
                  train_borders_match_class_per_bin, 
                  class_count_dict,
                  group_experts= True,
-                 log_writer=None):
+                 log_writer=None,
+                 others_factor = 8):
         self.hyperparams = hyperparams
         self.env = env
         self.node_type = node_type
@@ -40,15 +41,18 @@ class MultiHypothesisNet(object):
         self.group_experts = group_experts
         self.criterion_ldam = LDAMLoss(cls_num_list= [*self.class_count_dict[0].values()])
         self.criterion_con_scores = ScoreBasedConLoss()
+        self.others_factor= others_factor # beta
         if group_experts:
             nb_observations = sum([*self.class_count_dict[0].values()])
             
             self.criterion_ldam_bins = {}
             self.criterion_ldam_bins_weights = {}
+
+            class_count = [*self.class_count_dict[0].values()]
             for curr_bin in range(self.nb_bins+1):
-                class_count = [*self.class_count_dict[0].values()]
-                curr_class_count = class_count[self.train_borders[curr_bin][0]: self.train_borders[curr_bin][-1] +1]
+                #curr_class_count = class_count[self.train_borders[curr_bin][0]: self.train_borders[curr_bin][-1] +1]
                 
+                curr_class_count = [class_count[x] for x in self.train_borders[curr_bin]]
                 # we should add number of observation of others; we add it in the beginning because label = 0
                 #TODO do it with the proper values
                 
@@ -57,7 +61,7 @@ class MultiHypothesisNet(object):
                 #else:
                 #    curr_class_count.insert(0, curr_class_count[0] + 10)
                 curr_class_count.insert(0, nb_observations - sum( curr_class_count))
-
+                
                 self.criterion_ldam_bins[curr_bin] = LDAMLoss(cls_num_list= curr_class_count)
                 self.criterion_ldam_bins_weights[curr_bin] = curr_class_count
 
@@ -857,7 +861,7 @@ class MultiHypothesisNet(object):
         return round(accuracy_bin * 100, 2)
 
 
-    def get_losses_class_group(self, y_hat_cl, targets_cl, weight, target_class_bin, others_factor = 8):
+    def get_losses_class_group(self, y_hat_cl, targets_cl, weight, target_class_bin):
         current_losses = {}
         current_losses_no_reweight = {}
         accuracies_bins = {}
@@ -883,9 +887,9 @@ class MultiHypothesisNet(object):
                 if curr_bin == 0:
                     curr_nodes_others = curr_nodes[other_curr_indices]
                 else:
-                    if len(other_curr_indices) >= len(curr_indices) * others_factor:
+                    if len(other_curr_indices) >= len(curr_indices) * self.others_factor:
                         perm = torch.randperm(len(other_curr_indices))
-                        idx = perm[:len(curr_indices) * others_factor]
+                        idx = perm[:len(curr_indices) * self.others_factor]
                         other_curr_indices = other_curr_indices[idx]
 
                     curr_nodes_others = curr_nodes[other_curr_indices]

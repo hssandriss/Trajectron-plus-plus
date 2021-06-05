@@ -378,7 +378,7 @@ def main():
     hyperparams['Enc_FC_dims'] = 128
     hyperparams['num_hyp'] = 20
     hyperparams['output_con_model'] = 64
-    hyperparams['epoch_start_ldam'] = 75
+    hyperparams['epoch_start_ldam'] = 125
 
     print('-----------------------')
     print('| TRAINING PARAMETERS |')
@@ -708,13 +708,17 @@ def main():
             for node_type, data_loader_eval in eval_data_loader.items():
                 curr_iter = curr_iter_node_type[node_type]
                 pbar = tqdm(data_loader_eval, ncols=80)
-                
-                curr_iter, eval_loss_cl_epoch, eval_epoch_losses, eval_epoch_accuracies, eval_loss_cl_epoch ,eval_losses_cl_list ,eval_losses_cl_n_w_list ,e_accuracies_list ,eval_loss_reg_epoch ,eval_loss_epoch, eval_loss_cl_n_w_epoch = eval_epoch_groupExperts_jointLDAM (factor_eval, eval_loss_cl_epoch ,eval_losses_cl_list ,eval_losses_cl_n_w_list ,e_accuracies_list ,eval_loss_reg_epoch ,eval_loss_epoch, eval_loss_cl_n_w_epoch , curr_iter, pbar, trajectron, optimizer, lr_scheduler, hyperparams, top_n, epoch, nb_bins, node_type, log_writer, model_registrar, weight)
-                
-                eval_loss_df = eval_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(loss_cl_epoch)]], columns=[
-                    'epoch', 'loss']), ignore_index=True)
-                eval_losses_list.append(eval_epoch_losses)
-                eval_accuracies_list.append(eval_epoch_accuracies)
+                if args.contrastive and epoch <= ts + hyperparams['epoch_start_ldam']:
+                    curr_iter, eval_loss_cl_epoch ,eval_loss_reg_epoch ,eval_loss_epoch = epoch_train_groupExperts_ConScore_joint ( fix_encoder, factor_eval, loss_cl_epoch ,eval_loss_reg_epoch ,eval_loss_epoch , curr_iter, pbar, trajectron, optimizer, lr_scheduler, hyperparams, top_n, epoch, node_type, log_writer, model_registrar)
+                    eval_loss_df = eval_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(loss_cl_epoch)]], columns=[
+                        'epoch', 'loss']), ignore_index=True)
+                else:
+                    curr_iter, eval_loss_cl_epoch, eval_epoch_losses, eval_epoch_accuracies, eval_loss_cl_epoch ,eval_losses_cl_list ,eval_losses_cl_n_w_list ,e_accuracies_list ,eval_loss_reg_epoch ,eval_loss_epoch, eval_loss_cl_n_w_epoch = eval_epoch_groupExperts_jointLDAM (factor_eval, eval_loss_cl_epoch ,eval_losses_cl_list ,eval_losses_cl_n_w_list ,e_accuracies_list ,eval_loss_reg_epoch ,eval_loss_epoch, eval_loss_cl_n_w_epoch , curr_iter, pbar, trajectron, optimizer, lr_scheduler, hyperparams, top_n, epoch, nb_bins, node_type, log_writer, model_registrar, weight)
+                    
+                    eval_loss_df = eval_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(eval_loss_cl_epoch)]], columns=[
+                        'epoch', 'loss']), ignore_index=True)
+                    eval_losses_list.append(eval_epoch_losses)
+                    eval_accuracies_list.append(eval_epoch_accuracies)
 
                 curr_iter_node_type[node_type] = curr_iter
 

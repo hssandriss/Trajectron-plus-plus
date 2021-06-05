@@ -459,6 +459,7 @@ def main():
                                              node_freq_mult=hyperparams['node_freq_mult_train'],
                                              hyperparams=hyperparams,
                                              binary = False, 
+                                             nb_classes = args.nb_classes,
                                              min_history_timesteps=hyperparams['minimum_history_length'],
                                              min_future_timesteps=hyperparams['prediction_horizon'],
                                              return_robot=not args.incl_robot_node)
@@ -510,9 +511,11 @@ def main():
                                           hyperparams=hyperparams,
                                           train_borders= train_borders, 
                                           binary = False, 
+                                          nb_classes = args.nb_classes,
                                           min_history_timesteps=hyperparams['minimum_history_length'],
                                           min_future_timesteps=hyperparams['prediction_horizon'],
-                                          return_robot=not args.incl_robot_node)
+                                          return_robot=not args.incl_robot_node)        
+        nb_classes_eval = list(eval_dataset.class_count_dict[0].keys())[-1] +1
         eval_data_loader = dict()
         for node_type_data_set in eval_dataset:
             node_type_dataloader = utils.data.DataLoader(node_type_data_set,
@@ -779,7 +782,7 @@ def main():
                     eval_loss_df = eval_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(eval_loss_cl_epoch), np.nan]], columns=[
                         'epoch', 'loss', 'accuracy']), ignore_index=True)
                 else:   
-                    curr_iter, eval_epoch_losses, eval_epoch_accuracies, eval_accuracy_epoch, eval_loss_cl_epoch, eval_loss_cl_epoch ,eval_accuracy_epoch ,eval_losses_cl_list ,eval_losses_cl_n_w_list ,e_accuracies_list ,eval_loss_reg_epoch , eval_loss_epoch ,eval_loss_cl_n_w_epoch  = epoch_eval_ldam_joint(factor_eval ,eval_loss_cl_epoch ,eval_accuracy_epoch ,eval_losses_cl_list ,eval_losses_cl_n_w_list ,e_accuracies_list ,eval_loss_reg_epoch , eval_loss_epoch ,eval_loss_cl_n_w_epoch, curr_iter, pbar, trajectron, optimizer, lr_scheduler, hyperparams, top_n, epoch, nb_classes, node_type, log_writer, model_registrar, weight )
+                    curr_iter, eval_epoch_losses, eval_epoch_accuracies, eval_accuracy_epoch, eval_loss_cl_epoch, eval_loss_cl_epoch ,eval_accuracy_epoch ,eval_losses_cl_list ,eval_losses_cl_n_w_list ,e_accuracies_list ,eval_loss_reg_epoch , eval_loss_epoch ,eval_loss_cl_n_w_epoch  = epoch_eval_ldam_joint(factor_eval ,eval_loss_cl_epoch ,eval_accuracy_epoch ,eval_losses_cl_list ,eval_losses_cl_n_w_list ,e_accuracies_list ,eval_loss_reg_epoch , eval_loss_epoch ,eval_loss_cl_n_w_epoch, curr_iter, pbar, trajectron, optimizer, lr_scheduler, hyperparams, top_n, epoch, nb_classes_eval, node_type, log_writer, model_registrar, weight )
                     eval_loss_df = eval_loss_df.append(pd.DataFrame(data=[[epoch, np.mean(eval_loss_cl_epoch), np.mean(eval_accuracy_epoch)]], columns=[
                     'epoch', 'loss', 'accuracy']), ignore_index=True)
                     eval_losses_list.append(eval_epoch_losses)

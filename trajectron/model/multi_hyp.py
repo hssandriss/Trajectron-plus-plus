@@ -1,11 +1,13 @@
 import warnings
+
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
+from environment.scene_graph import DirectedEdge
+
+import model.dynamics as dynamic_module
 from model.components import *
 from model.model_utils import *
-import model.dynamics as dynamic_module
-from environment.scene_graph import DirectedEdge
 
 
 class MultiHypothesisNet(object):
@@ -729,7 +731,7 @@ class MultiHypothesisNet(object):
             h = h_state
         hypothesis = torch.stack(mus, dim=2)  # [bs, num_hyp, horizon, 2]
         hypothesis = self.dynamic.integrate_samples(hypothesis, None)  # [bs, num_hyp, horizon, 2]
-        return hypothesis, features
+        return hypothesis, F.normalize(features , dim = 1)
 
     def closest_mu(self, mus, gt):
         gt = gt.unsqueeze(1).repeat(1, self.hyperparams['num_hyp'], 1)
