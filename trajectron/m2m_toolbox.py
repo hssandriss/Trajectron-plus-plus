@@ -13,6 +13,7 @@ import torch.nn.functional as F
 import tqdm
 from numpy.lib.polynomial import polysub
 from torch import Size, mode, nn, tensor
+from torch.distributions.normal import Normal
 from tqdm.auto import tqdm
 
 from model.model_utils import ModeKeys
@@ -673,6 +674,7 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
     trajectron_g.model_registrar.eval()
     criterion = nn.CrossEntropyLoss()
     gen_coef = hyperparams['gen_coef']
+    gen_kl_coef = hyperparams['gen_kl_coef']
     edge_gen = False
     if hyperparams['gen_edges'] == 'yes':
         edge_gen = True
@@ -738,13 +740,28 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
         if hyperparams['gen_distance_obj'] == 'yes':
             distance_objective = (compute_trajectory_distance(x_st_t[:, :, :2]) - compute_trajectory_distance(x_st_t_pre[:, :, :2])).pow(2).mean()
             loss += gen_coef * distance_objective
+        if hyperparams['gen_kl_obj'] == 'yes':
+            disp = (((x_st_t[:, :, :2] - x_st_t_pre[:, :, :2])**2).sum(dim=2))**0.5
+            scales = disp.mean(1).log10().int().clamp_(-6, 6).float()  # Scales per sample
+            std = (10**scales).unsqueeze(1) * torch.ones(disp.shape).to(device)
+            mean = torch.zeros(disp.shape).to(device)
+            normal_dist = Normal(mean, std)
+            noise_samples = normal_dist.sample()
+            # log_prob_noise = normal_dist.log_prob(noise_samples)
+            # log_prob_disp = normal_dist.log_prob(disp)
+            log_prob_noise = F.log_softmax(input=noise_samples, dim=1)
+            log_prob_disp = F.log_softmax(input=disp, dim=1)
+            import pdb; pdb.set_trace()
+            kl_objective = F.kl_div(log_prob_disp, log_prob_noise, log_target=True, reduction='mean')
+            assert kl_objective >= 0, "Instability! KL divergence should be always positive"
+            loss += gen_kl_coef * kl_objective
         # Computing gradient wrt the input
         if edge_gen:
             grad_vals = torch.autograd.grad(loss, [x_st_t_o, *combined_neighbors])
         else:
             grad_vals = torch.autograd.grad(loss, [x_st_t_o])
-        grad_x_st_t = grad_vals[0]
-        x_st_t_o = x_st_t_o - make_step(grad_x_st_t, 'l2', step_size)
+        grad_x_st_t_o = grad_vals[0]
+        x_st_t_o = x_st_t_o - make_step(grad_x_st_t_o, 'l2', step_size)
         x_st_t_o = torch.clamp(x_st_t_o, 0, 1)
         if edge_gen:
             grad_neighbors = grad_vals[1:]
