@@ -182,10 +182,10 @@ if __name__ == '__main__':
     hyperparams['append_gen'] = 'yes'
     hyperparams['main_coef'] = 50
     hyperparams['gen_coef'] = 1
-    hyperparams['gen_kl_coef'] = 0.1
+    hyperparams['gen_kl_coef'] = 1
     hyperparams['gen_kl_obj'] = 'yes'
-    hyperparams['gen_angular_obj'] = 'yes'
-    hyperparams['gen_distance_obj'] = 'yes'
+    hyperparams['gen_angular_obj'] = 'no'
+    hyperparams['gen_distance_obj'] = 'no'
     hyperparams['gen_edges'] = 'no'
 
     # ! Override hyperparameters
