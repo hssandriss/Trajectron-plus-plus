@@ -747,14 +747,13 @@ def generation(trajectron_g, trajectron, node_type, device, seed_inputs, seed_ta
             mean = torch.zeros(disp.shape).to(device)
             normal_dist = Normal(mean, std)
             noise_samples = normal_dist.sample()
-            # log_prob_noise = normal_dist.log_prob(noise_samples)
-            # log_prob_disp = normal_dist.log_prob(disp)
-            log_prob_noise = F.log_softmax(input=noise_samples, dim=1)
-            log_prob_disp = F.log_softmax(input=disp, dim=1)
-            kl_objective = F.kl_div(log_prob_disp, log_prob_noise, log_target=True, reduction='mean')
-            assert kl_objective >= 0, "Instability! KL divergence should be always positive"
+            prob_noise = F.softmax(input=noise_samples, dim=-1)
+            log_prob_disp = F.log_softmax(input=disp, dim=-1)
+            kl_objective = F.kl_div(log_prob_disp, prob_noise, reduction='mean')
+            if kl_objective < 0:
+                print("Instability! KL divergence should be always positive")
+                import pdb; pdb.set_trace()
             loss += gen_kl_coef * kl_objective
-            # import pdb; pdb.set_trace()
         # Computing gradient wrt the input
         if edge_gen:
             grad_vals = torch.autograd.grad(loss, [x_st_t_o, *combined_neighbors])
