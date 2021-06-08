@@ -202,5 +202,10 @@ parser.add_argument('--net_trajectron_ts',
 parser.add_argument('--warm', default=160, type=int, help='Deferred strategy for re-balancing')
 parser.add_argument('--gen', '-gen', action='store_true', help='')
 
+parser.add_argument('--nb_bins',
+                    help='nb_bins for Group of Experts loss',
+                    type=int,
+                    default=4)
+
 
 args = parser.parse_args()

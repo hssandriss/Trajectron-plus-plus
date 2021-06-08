@@ -37,6 +37,7 @@ class MultiHypothesisNet(object):
         self.state = self.hyperparams['state']
         self.pred_state = self.hyperparams['pred_state'][node_type]
         self.nb_classes = self.hyperparams['num_classes']
+        self.nb_bins = self.hyperparams['num_bins']
         self.state_length = int(
             np.sum([len(entity_dims) for entity_dims in self.state[node_type].values()]))
         if self.hyperparams['incl_robot_node']:
@@ -170,12 +171,15 @@ class MultiHypothesisNet(object):
         self.add_submodule(self.node_type + '/decoder/initial_mu',
                            model_if_absent=nn.Linear(self.state_length, self.pred_state_length))
         self.add_submodule(self.node_type + '/decoder/kalman_logits',
-                           model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'] + decoder_input_dims, self.nb_classes))
+                           model_if_absent=NormedLinear(self.hyperparams['dec_rnn_dim'] + decoder_input_dims, self.nb_classes))
+
+        self.add_submodule(self.node_type + '/decoder/kalman_logits_groupExperts',
+                           model_if_absent=NormedLinear(self.hyperparams['dec_rnn_dim'] + decoder_input_dims, self.nb_classes + self.nb_bins + 1))
 
         self.add_submodule(self.node_type + '/con_head',
                            model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'] + decoder_input_dims,
                                                      self.hyperparams['dec_rnn_dim'] + decoder_input_dims))
-        
+
         ####################
         #   Decoder LSTM   #
         ####################
@@ -187,11 +191,11 @@ class MultiHypothesisNet(object):
 
         self.add_submodule(self.node_type + '/decoder/rnn_cell',
                            model_if_absent=nn.GRUCell(decoder_input_dims_reg, self.hyperparams['dec_rnn_dim']))
-        
+
         self.add_submodule(self.node_type + '/decoder/proj_to_mus',
                            model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
                                                      self.hyperparams['num_hyp'] * self.pred_state_length))
-        
+
         self.x_size = x_size
 
     def create_edge_models(self, edge_types):
@@ -893,6 +897,7 @@ class MultiHypothesisNet(object):
         initial_h_model = self.node_modules[self.node_type + '/decoder/initial_h']
         initial_mu_model = self.node_modules[self.node_type + '/decoder/initial_mu']
         logits_model = self.node_modules[self.node_type + '/decoder/kalman_logits']
+        logits_model_groupExperts = self.node_modules[self.node_type + '/decoder/kalman_logits_groupExperts']
         con_model = self.node_modules[self.node_type + '/con_head']
 
         initial_h = initial_h_model(x)
@@ -905,6 +910,7 @@ class MultiHypothesisNet(object):
             input_ = torch.cat([x, initial_mu.repeat(1, self.hyperparams['num_hyp'])], dim=1)
             features = torch.cat([x, initial_mu, initial_h], dim=1)
 
+        logitsGroupExperts = logits_model_groupExperts(features)
         logits = logits_model(features)
         features = F.normalize(con_model(features), dim=1)
 
@@ -925,7 +931,7 @@ class MultiHypothesisNet(object):
             h = h_state
         hypothesis = torch.stack(mus, dim=2)  # [bs, num_hyp, horizon, 2]
         hypothesis = self.dynamic.integrate_samples(hypothesis, None)  # [bs, num_hyp, horizon, 2]
-        return logits, hypothesis, features
+        return logits, logitsGroupExperts, hypothesis, features
 
     def predict(self, x, n_s_t0, x_nr_t, horizon):
         """
@@ -943,9 +949,9 @@ class MultiHypothesisNet(object):
         :param num_samples: Number of samples from the latent space.
         :return:
         """
-        y_predicted, hypothesis, features = self.decoder(x, n_s_t0, x_nr_t, horizon)
+        y_predicted, logitsGroupExperts, hypothesis, features = self.decoder(x, n_s_t0, x_nr_t, horizon)
 
-        return y_predicted, hypothesis, features
+        return y_predicted, logitsGroupExperts, hypothesis, features
 
     def wta(self, gt, hyp):
         """
@@ -984,3 +990,15 @@ class MultiHypothesisNet(object):
             losses = losses.mean(dim=0)
             sum_losses += losses
         return sum_losses
+
+
+class NormedLinear(nn.Module):
+
+    def __init__(self, in_features, out_features):
+        super(NormedLinear, self).__init__()
+        self.weight = nn.Parameter(torch.Tensor(in_features, out_features))
+        self.weight.data.uniform_(-1, 1).renorm_(2, 1, 1e-5).mul_(1e5)  # Linear layer initialization
+
+    def forward(self, x):
+        out = F.normalize(x, dim=1).mm(F.normalize(self.weight, dim=0)) 
+        return out

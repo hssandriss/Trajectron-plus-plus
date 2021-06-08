@@ -24,6 +24,110 @@ from model.trajectron_M2m import Trajectron
 # TODO Build an evaluation function that computes the accuracy classwise
 
 
+class GroupExpertsLossLDAM(nn.Module):
+
+    def __init__(self, borders_match_class_per_bin, device, hyperparams, others_factor=8):
+        super(GroupExpertsLossLDAM, self).__init__()
+        self.class_count_dict = hyperparams['class_count_dic']
+        self.train_borders = hyperparams["train_borders"]
+        self.others_factor = others_factor
+        self.nb_bins = hyperparams["num_bins"]
+        nb_observations = sum([*self.class_count_dict.values()])
+        self.train_borders_match_class_per_bin = borders_match_class_per_bin
+        self.criterion_ldam_bins = {}
+        self.criterion_ldam_bins_weights = {}
+        self.device = device
+        for curr_bin in range(self.nb_bins + 1):
+            class_count = [*self.class_count_dict.values()]
+            curr_class_count = class_count[self.train_borders[curr_bin][0]: self.train_borders[curr_bin][-1] + 1]
+            curr_class_count.insert(0, nb_observations - sum(curr_class_count))  # Others class 0
+            self.criterion_ldam_bins[curr_bin] = LDAMLoss(cls_num_list=curr_class_count)
+            self.criterion_ldam_bins_weights[curr_bin] = curr_class_count
+
+    def get_accuracy(self, curr_nodes_bin_batch, curr_targets_cl_bin_batch):
+        accuracy_bin = 0
+        y_hat = F.log_softmax(curr_nodes_bin_batch, dim=1).max(1)[1]
+        accuracy_bin = torch.sum(y_hat == curr_targets_cl_bin_batch).item() / len(curr_targets_cl_bin_batch)
+        return round(accuracy_bin * 100, 2)
+
+    def get_losses_class_group(self, y_hat_cl, targets_cl, target_class_bin, weight):
+        current_losses = {}
+        current_losses_no_reweight = {}
+        accuracies_bins = {}
+        curr_start_nodes = 0
+        for curr_bin in range(self.nb_bins + 1):
+            curr_indices = torch.where(target_class_bin == curr_bin)[0]
+            other_curr_indices = torch.where(target_class_bin != curr_bin)[0]
+            if len(curr_indices) == 0:
+                current_losses[curr_bin] = None
+                current_losses_no_reweight[curr_bin] = None
+                accuracies_bins[curr_bin] = None
+            else:
+                curr_targets_cl = targets_cl[curr_indices]
+                curr_targets_cl_bin = torch.zeros_like(curr_targets_cl)
+
+                for i in range(len(curr_targets_cl)):
+                    curr_targets_cl_bin[i] = self.train_borders_match_class_per_bin[curr_bin][self.train_borders[curr_bin].index(curr_targets_cl[i])]
+                # curr_targets_cl_bin are labels of curr_nodes_not_others examples
+                curr_nodes = y_hat_cl[:, curr_start_nodes:curr_start_nodes + self.train_borders_match_class_per_bin[curr_bin][-1] + 1]
+                curr_nodes_not_others = curr_nodes[curr_indices]
+                if curr_bin == 0:
+                    curr_nodes_others = curr_nodes[other_curr_indices]
+                else:
+                    if len(other_curr_indices) >= len(curr_indices) * self.others_factor:
+                        perm = torch.randperm(len(other_curr_indices))
+                        idx = perm[:len(curr_indices) * self.others_factor]
+                        other_curr_indices = other_curr_indices[idx]
+
+                    curr_nodes_others = curr_nodes[other_curr_indices]
+                # curr_targets_cl_bin_others are labels of curr_nodes_others examples ==> all labels of others are 0
+                curr_targets_cl_bin_others = torch.zeros(len(curr_nodes_others), dtype=torch.int64).to(self.device)
+                curr_targets_cl_bin_batch = torch.cat((curr_targets_cl_bin, curr_targets_cl_bin_others), 0)
+                curr_nodes_bin_batch = torch.cat((curr_nodes_not_others, curr_nodes_others), 0)
+                if curr_bin == 3:
+                    import pdb; pdb.set_trace()
+
+                assert(len(curr_targets_cl_bin_batch) == len(curr_nodes_bin_batch))
+                # we should randomize the batch
+                permuted_indices = torch.randperm(len(curr_nodes_bin_batch))
+                curr_targets_cl_bin_batch = curr_targets_cl_bin_batch[permuted_indices]
+                curr_nodes_bin_batch = curr_nodes_bin_batch[permuted_indices]
+                # curr_targets_cl_bin_batch qre targets of  curr_nodes_bin_batch
+                print(curr_bin, curr_nodes_bin_batch.shape, curr_targets_cl_bin_batch.shape)
+                # calculate the loss function of the current bin
+                if weight == True:
+
+                    curr_loss = self.criterion_ldam_bins[curr_bin].forward(curr_nodes_bin_batch, curr_targets_cl_bin_batch, weight=self.criterion_ldam_bins_weights[curr_bin])
+                else:
+                    curr_loss = self.criterion_ldam_bins[curr_bin].forward(curr_nodes_bin_batch, curr_targets_cl_bin_batch, weight=None)
+
+                curr_loss_no_reweight = self.criterion_ldam_bins[curr_bin].forward(curr_nodes_bin_batch, curr_targets_cl_bin_batch, weight=None).detach()
+                current_losses[curr_bin] = curr_loss.mean()
+                current_losses_no_reweight[curr_bin] = curr_loss_no_reweight.mean()
+
+                accuracies_bins[curr_bin] = self.get_accuracy(curr_nodes_bin_batch, curr_targets_cl_bin_batch)
+
+                curr_start_nodes += self.train_borders_match_class_per_bin[curr_bin][-1] + 1
+        return current_losses, current_losses_no_reweight, accuracies_bins
+
+    def forward(self, y_hat, gt_class, gt_bins):
+        """
+        Computes Bags+LDAM Loss for a give batch prediction
+            y_hat: Tensor shape [BS, num_classes + num_bins + 1]
+            gt: Tensor [BS,1]
+            gt_bins: Tensor [BS,1]
+            weight: [num_classes]
+        """
+        loss_cl_bins, loss_cl_no_reweighted_bins, accuracies_bins = self.get_losses_class_group(y_hat, gt_class, gt_bins, weight=False)
+        loss_cl = 0
+        loss_cl_no_reweighted = 0
+        for curr_bin in range(self.nb_bins + 1):
+            if loss_cl_bins[curr_bin] is not None:
+                loss_cl += loss_cl_bins[curr_bin]
+                loss_cl_no_reweighted += loss_cl_no_reweighted_bins[curr_bin]
+        return loss_cl
+
+
 class bcolors:
     HEADER = '\033[95m'
     OKBLUE = '\033[94m'
@@ -46,8 +150,8 @@ def train_joint_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, 
     if hyperparams['coef_schedule'] != "":
         coef = 2 * top_n
 
-    if criterion.weight is not None:
-        coef = coef * 1e2
+    # if criterion.weight is not None:
+    #     coef = coef * 1e2
     print(f"Using {coef}*CE+EWTA Loss")
     for node_type, data_loader in train_data_loader.items():
         curr_iter = curr_iter_node_type[node_type]
@@ -62,17 +166,20 @@ def train_joint_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, 
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
             optimizer[node_type].zero_grad()
-            inputs = batch[:-2]
+            inputs = batch[:-3]
             targets = batch[-2]
+            target_bin = batch[-3]
             regression_gt = inputs[2].to(device)
             targets = targets.to(device)
+            target_bin = target_bin.to(device)
             # inputs_shape =[x[i].shape for i in range(5)]
             # some inputs have nan values in x_st_t (inputs[3]) torch.isnan(inputs[3]).sum(2).sum(1).nonzero()
             inputs = trajectron.preprocess_edges(inputs, node_type)
-            y_hat, hypothesis, features = trajectron.predict(inputs, horizon, node_type, mode=ModeKeys.TRAIN)
+            y_hat, y_hat_bags, hypothesis, features = trajectron.predict(inputs, horizon, node_type, mode=ModeKeys.TRAIN)
             # if torch.isnan(y_hat).nonzero().sum() > 0:
             #     import pdb; pdb.set_trace()
-            train_loss = criterion(y_hat, targets)
+            import pdb; pdb.set_trace()
+            train_loss = criterion(y_hat_bags, targets, target_bin)
             classification_loss = train_loss.mean()
             regression_loss = trajectron.regression_loss(node_type, regression_gt, hypothesis, top_n)
             joint_loss = classification_loss * coef + regression_loss
@@ -164,7 +271,7 @@ def train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criter
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
             optimizer[node_type].zero_grad()
-            inputs = batch[:-2]
+            inputs = batch[:-3]
             targets = batch[-2]
             targets = targets.to(device)
             # inputs_shape =[x[i].shape for i in range(5)]
@@ -251,7 +358,7 @@ def train_epoch_con(trajectron, curr_iter_node_type, optimizer, lr_scheduler, cr
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
             optimizer[node_type].zero_grad()
-            inputs = batch[:-2]
+            inputs = batch[:-3]
             targets = batch[-2]
             targets = targets.to(device)
             inputs = trajectron.preprocess_edges(inputs, node_type)
@@ -303,7 +410,7 @@ def train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_s
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
             optimizer[node_type].zero_grad()
-            inputs = batch[:-2]
+            inputs = batch[:-3]
             scores = batch[-1]
             regression_gt = inputs[2].to(device)
             scores = scores.to(device)
@@ -531,7 +638,7 @@ def validation_metrics(model, criterion, eval_data_loader, epoch, eval_device, h
             print(f"Starting Evaluation @ epoch {epoch} for node type: {node_type}")
             pbar = tqdm(data_loader, ncols=120)
             for batch in pbar:
-                inputs = batch[:-2]
+                inputs = batch[:-3]
                 targets = batch[-2]
                 targets = targets.to(eval_device)
                 regression_gt = inputs[2].to(eval_device)
@@ -984,7 +1091,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
         pbar = tqdm(data_loader, ncols=180, position=0, leave=True)
         for batch in pbar:
             trajectron.set_curr_iter(curr_iter)
-            inputs = batch[:-2]
+            inputs = batch[:-3]
             targets = batch[-2]
             targets = targets.to(device)
             inputs = trajectron.preprocess_edges(inputs, node_type)
@@ -1130,29 +1237,32 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
 
 
 class LDAMLoss(nn.Module):
-    """Reference: https://github.com/kaidic/LDAM-DRW/blob/master/losses.py"""
 
-    def __init__(self, cls_num_list, max_m=0.5, weight=None, s=30, reduction='mean'):
+    def __init__(self, cls_num_list, max_m=0.5, s=30):
         super(LDAMLoss, self).__init__()
-        m_list = 1.0 / np.sqrt(np.sqrt(cls_num_list))
-        m_list = m_list * (max_m / np.max(m_list))
+        m_list = 1.0 / np.sqrt(np.sqrt(cls_num_list))  # list of deltas without cste C
+        m_list = m_list * (max_m / np.max(m_list))  # list of deltas when we multiply by C
         m_list = torch.cuda.FloatTensor(m_list)
-        self.m_list = m_list
-        self.scale = s
-        self.weight = weight
-        self.reduction = reduction
+        self.m_list = m_list  # inverse proportional to cls_num_list ==> sum != 1
+        assert s > 0
+        self.s = s
+        self.cls_num_list = cls_num_list  # how many observation per class
+        print(self.m_list, self.m_list.shape)
+        # majority to minority
 
-    def forward(self, x, target):
-        index = torch.zeros_like(x, dtype=torch.uint8)
-        index.scatter_(1, target.data.view(-1, 1), 1)
+    def forward(self, x, target, weight):
+        # x shape: [bs, nb_classes]
+        index = torch.zeros_like(x, dtype=torch.uint8)  # zeros [bs, nb_classes]
+        index.scatter_(1, target.data.view(-1, 1), 1)  # put one in the correct class
 
         index_float = index.type(torch.cuda.FloatTensor)
+        print(self.m_list[None, :].shape, index_float.transpose(0, 1).shape)
         batch_m = torch.matmul(self.m_list[None, :], index_float.transpose(0, 1))
-        batch_m = batch_m.view((-1, 1))
-        x_m = x - batch_m
+        batch_m = batch_m.view((-1, 1))  # [bs, 1] Delta of correct class
+        x_m = x - batch_m  # prediction of ALL classees - Delta
 
-        output = torch.where(index, x_m, x)
-        return F.cross_entropy(self.scale * output, target, weight=self.weight, reduction=self.reduction)
+        output = torch.where(index, x_m, x)  # we take x_m if index else we take x
+        return F.cross_entropy(self.s * output, target, weight=weight, reduction='none')
 
 
 class SupervisedConLoss(nn.Module):

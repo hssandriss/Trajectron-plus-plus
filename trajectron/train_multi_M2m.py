@@ -23,7 +23,9 @@ import visualization
 from argument_parser import args
 # from m2m_toolbox import FocalLoss, bcolors, generation, train_epoch, train_epoch_con_score_based, train_gen_epoch, train_epoch_con, train_epoch_con_score_based, LDAMLoss, SupervisedConLoss, ScoreBasedConLoss
 from m2m_toolbox import *
-from model.dataset import EnvironmentDataset, EnvironmentDatasetKalman, collate
+from model.dataset import (EnvironmentDataset, EnvironmentDatasetKalman,
+                           EnvironmentDatasetKalmanGroupExperts,
+                           NodeTypeDatasetKalmanGroupExperts, collate)
 from model.model_registrar import ModelRegistrar
 from model.model_utils import cyclical_lr
 from model.trajectron_M2m import Trajectron
@@ -155,16 +157,23 @@ if __name__ == '__main__':
     train_scenes = train_env.scenes
     train_scenes_sample_probs = train_env.scenes_freq_mult_prop if args.scene_freq_mult_train else None
 
-    train_dataset = EnvironmentDatasetKalman(train_env,
-                                             scores_path,
-                                             hyperparams['state'],
-                                             hyperparams['pred_state'],
-                                             scene_freq_mult=hyperparams['scene_freq_mult_train'],
-                                             node_freq_mult=hyperparams['node_freq_mult_train'],
-                                             hyperparams=hyperparams,
-                                             min_history_timesteps=hyperparams['minimum_history_length'],
-                                             min_future_timesteps=hyperparams['prediction_horizon'],
-                                             return_robot=not args.incl_robot_node)
+    train_dataset = EnvironmentDatasetKalmanGroupExperts(train_env,
+                                                         scores_path,
+                                                         hyperparams['state'],
+                                                         hyperparams['pred_state'],
+                                                         scene_freq_mult=hyperparams['scene_freq_mult_train'],
+                                                         node_freq_mult=hyperparams['node_freq_mult_train'],
+                                                         hyperparams=hyperparams,
+                                                         nb_bins=args.nb_bins,
+                                                         min_history_timesteps=hyperparams['minimum_history_length'],
+                                                         min_future_timesteps=hyperparams['prediction_horizon'],
+                                                         return_robot=not args.incl_robot_node)
+    # nb of observations in each Kalman class
+
+    print('borders: ', train_dataset.borders)
+    hyperparams["train_borders"] = train_dataset.borders[0]
+    nb_bins = len(hyperparams["train_borders"].keys()) - 1  # if nb_bins = 4; you have 0,1,2,3,4
+    hyperparams["num_bins"] = args.nb_bins
 
     hyperparams['class_count_dic'] = train_dataset.class_count_dict[0]
     hyperparams['class_count'] = list(hyperparams['class_count_dic'].values())
@@ -229,17 +238,17 @@ if __name__ == '__main__':
         eval_scenes = eval_env.scenes
         eval_scenes_sample_probs = eval_env.scenes_freq_mult_prop if args.scene_freq_mult_eval else None
 
-        eval_dataset = EnvironmentDatasetKalman(eval_env,
-                                                scores_path,
-                                                hyperparams['state'],
-                                                hyperparams['pred_state'],
-                                                scene_freq_mult=hyperparams['scene_freq_mult_eval'],
-                                                node_freq_mult=hyperparams['node_freq_mult_eval'],
-                                                hyperparams=hyperparams,
-                                                min_history_timesteps=hyperparams['minimum_history_length'],
-                                                min_future_timesteps=hyperparams['prediction_horizon'],
-                                                return_robot=not args.incl_robot_node,
-                                                borders=train_dataset.boarders[0])
+        eval_dataset = EnvironmentDatasetKalmanGroupExperts(eval_env,
+                                                            scores_path,
+                                                            hyperparams['state'],
+                                                            hyperparams['pred_state'],
+                                                            scene_freq_mult=hyperparams['scene_freq_mult_train'],
+                                                            node_freq_mult=hyperparams['node_freq_mult_train'],
+                                                            hyperparams=hyperparams,
+                                                            nb_bins=args.nb_bins,
+                                                            min_history_timesteps=hyperparams['minimum_history_length'],
+                                                            min_future_timesteps=hyperparams['prediction_horizon'],
+                                                            return_robot=not args.incl_robot_node)
 
         eval_data_loader = dict()
         for node_type_data_set in eval_dataset:
@@ -253,22 +262,22 @@ if __name__ == '__main__':
     # TODO Make sure that the number of classes are the same for training, eval, test
         print(f"Loaded evaluation data from {eval_data_path}")
     # Offline Calculate Scene Graph
-    if hyperparams['offline_scene_graph'] == 'yes':
-        print(f"Offline calculating scene graphs")
-        print("Training scene graphs")
-        for i, scene in enumerate(train_scenes):
-            scene.calculate_scene_graph(train_env.attention_radius,
-                                        hyperparams['edge_addition_filter'],
-                                        hyperparams['edge_removal_filter'])
-            print(f"Created Scene Graph for Training Scene {i}")
+    # if hyperparams['offline_scene_graph'] == 'yes':
+    #     print(f"Offline calculating scene graphs")
+    #     print("Training scene graphs")
+    #     for i, scene in enumerate(train_scenes):
+    #         scene.calculate_scene_graph(train_env.attention_radius,
+    #                                     hyperparams['edge_addition_filter'],
+    #                                     hyperparams['edge_removal_filter'])
+    #         print(f"Created Scene Graph for Training Scene {i}")
 
-        if args.eval_every is not None or args.vis_every is not None:
-            print("Evaluation scene graphs")
-            for i, scene in enumerate(eval_scenes):
-                scene.calculate_scene_graph(eval_env.attention_radius,
-                                            hyperparams['edge_addition_filter'],
-                                            hyperparams['edge_removal_filter'])
-                print(f"Created Scene Graph for Evaluation Scene {i}")
+    #     if args.eval_every is not None or args.vis_every is not None:
+    #         print("Evaluation scene graphs")
+    #         for i, scene in enumerate(eval_scenes):
+    #             scene.calculate_scene_graph(eval_env.attention_radius,
+    #                                         hyperparams['edge_addition_filter'],
+    #                                         hyperparams['edge_removal_filter'])
+    #             print(f"Created Scene Graph for Evaluation Scene {i}")
     # Creating Models
     if args.net_g_ts:
         print("Loading baseline classifier g:")
@@ -337,7 +346,9 @@ if __name__ == '__main__':
     # Classification criterion
     # https://arxiv.org/pdf/1901.05555.pdf
     class_weights = class_weights.to(args.device)
-    criterion_2 = nn.CrossEntropyLoss(reduction='none')
+    # criterion_2 = nn.CrossEntropyLoss(reduction='none')
+    criterion_2 = GroupExpertsLossLDAM(train_dataset.train_borders_match_class_per_bin, args.device, hyperparams).to(args.device)
+
     criterion_1 = ScoreBasedConLoss()  # Use criterion_1._get_name() to get the name of the loss
     # with open(f'{model_dir}/config_{extra_tag}.json', 'w') as fout:
     #     json.dump(hyperparams, fout)
@@ -347,11 +358,13 @@ if __name__ == '__main__':
     #################################
     #           TRAINING            #
     #################################
-
+    import pdb; pdb.set_trace()
     print("\n" + bcolors.UNDERLINE + "Trained Model Extra_Tag:" + bcolors.ENDC)
     print(bcolors.OKGREEN + extra_tag + bcolors.ENDC)
     print(bcolors.UNDERLINE + "Class Count:" + bcolors.ENDC)
     print(bcolors.OKGREEN + str(hyperparams['class_count_dic']) + bcolors.ENDC)
+    print('borders: ', train_dataset.borders)
+
     curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
     # train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
     cls_generated, cls_accuracies, cls_losses, losses = [], [], [], []

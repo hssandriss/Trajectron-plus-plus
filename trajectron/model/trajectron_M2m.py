@@ -108,15 +108,15 @@ class Trajectron(object):
 
     def predict_jointly(self, x, n_s_t0, x_nr_t, node_type, horizon):
         model = self.node_models_dict[node_type]
-        logits, hypothesis, features = model.predict(x, n_s_t0, x_nr_t, horizon)
-        return logits, hypothesis, features
+        logits, bags_logits, hypothesis, features = model.predict(x, n_s_t0, x_nr_t, horizon)
+        return logits, bags_logits, hypothesis, features
 
     def predict(self, batch, horizon, node_type, mode):
         x, n_s_t0, x_nr_t = self.encoded_x(batch, node_type, mode)
         if mode == ModeKeys.TRAIN:
             assert x.is_leaf == False, "You are not backpropagating on the encoder"
-        logits, hypothesis, features = self.predict_jointly(x, n_s_t0, x_nr_t, node_type, horizon)
-        return logits, hypothesis, features
+        logits, bags_logits, hypothesis, features = self.predict_jointly(x, n_s_t0, x_nr_t, node_type, horizon)
+        return logits, bags_logits, hypothesis, features
 
     def regression_loss(self, node_type, gt, hypothesis, top_n):
         model = self.node_models_dict[node_type]
