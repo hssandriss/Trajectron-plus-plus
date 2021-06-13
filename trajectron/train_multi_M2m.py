@@ -180,6 +180,30 @@ if __name__ == '__main__':
     class_weights = train_dataset.class_weights[0].to(args.device)
     hyperparams['class_weights'] = class_weights.cpu().tolist()
     hyperparams['num_classes'] = len(hyperparams['class_count_dic'])
+    cls_bin = [0 for _ in range(hyperparams['num_classes'])]
+    mask_others = []
+    for k in train_dataset.borders[0].keys():
+        mask_others.append(False)
+        for j in train_dataset.borders[0][k]:
+            cls_bin[j] = k
+            mask_others.append(True)
+    hyperparams['cls_bin'] = cls_bin
+    hyperparams["mask_others"] = mask_others
+    mask_others = torch.BoolTensor(hyperparams["mask_others"])
+
+    def adjust_targets(targets):
+        # 14 <-> 15 : in target (14<->16; 14<->15)
+        # Only needed for mask application --> Classification
+        import pdb; pdb.set_trace()
+        tmp = (targets == 14)
+        targets[targets == 16] = 14
+        targets[tmp] = 16
+
+        tmp = (targets == 14)
+        targets[targets == 15] = 14
+        targets[tmp] = 15
+
+    import pdb; pdb.set_trace()
     # ! M2m hyperparameters
     hyperparams['beta'] = 0.9  # (0.9, 0.99, 0.999) Lower -> bigger p accept
     hyperparams['gamma'] = 0.8  # (0.9, 0.99) Lower -> bigger p accept
@@ -358,7 +382,6 @@ if __name__ == '__main__':
     #################################
     #           TRAINING            #
     #################################
-    import pdb; pdb.set_trace()
     print("\n" + bcolors.UNDERLINE + "Trained Model Extra_Tag:" + bcolors.ENDC)
     print(bcolors.OKGREEN + extra_tag + bcolors.ENDC)
     print(bcolors.UNDERLINE + "Class Count:" + bcolors.ENDC)
@@ -367,7 +390,7 @@ if __name__ == '__main__':
 
     curr_iter_node_type = {node_type: 0 for node_type in train_data_loader.keys()}
     # train_loss_df = pd.DataFrame(columns=['epoch', 'loss'])
-    cls_generated, cls_accuracies, cls_losses, losses = [], [], [], []
+    cls_accuracies, joint_losses, cls_losses, reg_losses = [], [], [], []
     top_n = hyperparams['num_hyp']
     start_at = 0
     hyperparams['coef_schedule'] = ""
@@ -392,40 +415,43 @@ if __name__ == '__main__':
             # Generation process and training with generated data
             train_stats, class_acc, class_loss, class_gen = train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
                                                                             train_data_loader, hyperparams, log_writer, save_gen_dir, args.device)
-            cls_generated.append({"epoch": epoch, "generated per class": class_gen})
+            # cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
             print("**** Train Epoch without generation ****")
-
+            epoch_jloss, epoch_rloss, epoch_closs, epoch_acc  = None, None, None, None
             # if epoch <= 300:
             # epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
             #                                          train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
             # else:
-            class_acc, class_loss = train_joint_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
-                                                      train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
-            # class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
-            #                                     train_data_loader, epoch, hyperparams, log_writer, args.device)
+            # epoch_jloss, epoch_rloss, epoch_closs, epoch_acc = train_joint_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
+            #                                                                      train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
+            epoch_closs, epoch_acc = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
+                                                 train_data_loader, epoch, hyperparams, log_writer, args.device)
         # if epoch > 200:
         #     hyperparams['weight_in_ce'] = ">200"
         #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=class_weights)
 
-        if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
-            validation_metrics(model=trajectron, criterion=criterion_2,
-                               eval_data_loader=eval_data_loader, epoch=epoch,
-                               eval_device=args.device, log_writer=log_writer, hyperparams=hyperparams)
+        # if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
+        #     validation_metrics(model=trajectron, criterion=criterion_2,
+        #                        eval_data_loader=eval_data_loader, epoch=epoch,
+        #                        eval_device=args.device, log_writer=log_writer, hyperparams=hyperparams)
 
         train_dataset.augment = False
-        cls_accuracies.append({"epoch": epoch, "accuracy per class": class_acc})
-        cls_losses.append({"epoch": epoch, "loss per class": class_loss})
-        losses.append({"epoch": epoch, "loss": epoch_loss})
+        cls_accuracies.append(epoch_acc)
+        joint_losses.append(epoch_jloss)
+        cls_losses.append(epoch_closs)
+        reg_losses.append(epoch_rloss)
+
         if (args.save_every is not None and epoch % args.save_every == 0) or epoch == args.train_epochs:
             model_registrar.save_models(epoch, extra_tag)
-            with open(f'{model_dir}/cls_accuracies_{extra_tag}.json', 'w') as fout:
-                json.dump(cls_accuracies, fout)
-            with open(f'{model_dir}/cls_losses_{extra_tag}.json', 'w') as fout:
-                json.dump(cls_losses, fout)
-            with open(f'{model_dir}/cls_generated_{extra_tag}.json', 'w') as fout:
-                json.dump(cls_generated, fout)
-            with open(f'{model_dir}/losses_{extra_tag}.json', 'w') as fout:
-                json.dump(losses, fout)
+
+        with open(f'{model_dir}/accuracies_{extra_tag}.json', 'w') as fout:
+            json.dump(cls_accuracies, fout)
+        with open(f'{model_dir}/cls_losses_{extra_tag}.json', 'w') as fout:
+            json.dump(cls_losses, fout)
+        with open(f'{model_dir}/reg_losses_{extra_tag}.json', 'w') as fout:
+            json.dump(reg_losses, fout)
+        with open(f'{model_dir}/joint_losses_{extra_tag}.json', 'w') as fout:
+            json.dump(joint_losses, fout)
         with open(os.path.join(model_dir, 'config.json'), 'w') as conf_json:
             json.dump(hyperparams, conf_json)
