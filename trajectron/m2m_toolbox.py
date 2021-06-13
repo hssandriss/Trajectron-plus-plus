@@ -1130,29 +1130,32 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
 
 
 class LDAMLoss(nn.Module):
-    """Reference: https://github.com/kaidic/LDAM-DRW/blob/master/losses.py"""
 
-    def __init__(self, cls_num_list, max_m=0.5, weight=None, s=30, reduction='mean'):
+    def __init__(self, cls_num_list, weights=None, max_m=0.5, s=30, reduction='none'):
         super(LDAMLoss, self).__init__()
-        m_list = 1.0 / np.sqrt(np.sqrt(cls_num_list))
-        m_list = m_list * (max_m / np.max(m_list))
+        m_list = 1.0 / np.sqrt(np.sqrt(cls_num_list))  # list of deltas without cste C
+        m_list = m_list * (max_m / np.max(m_list))  # list of deltas when we multiply by C
         m_list = torch.cuda.FloatTensor(m_list)
-        self.m_list = m_list
-        self.scale = s
-        self.weight = weight
+        self.m_list = m_list  # inverse proportional to cls_num_list ==> sum != 1
+        assert s > 0
+        self.s = s
+        self.cls_num_list = cls_num_list  # how many observation per class
         self.reduction = reduction
+        self.weights = weights
+        # majority to minority
 
     def forward(self, x, target):
-        index = torch.zeros_like(x, dtype=torch.uint8)
-        index.scatter_(1, target.data.view(-1, 1), 1)
+        # x shape: [bs, nb_classes]
+        index = torch.zeros_like(x, dtype=torch.uint8)  # zeros [bs, nb_classes]
+        index.scatter_(1, target.data.view(-1, 1), 1)  # put one in the correct class
 
         index_float = index.type(torch.cuda.FloatTensor)
         batch_m = torch.matmul(self.m_list[None, :], index_float.transpose(0, 1))
-        batch_m = batch_m.view((-1, 1))
-        x_m = x - batch_m
+        batch_m = batch_m.view((-1, 1))  # [bs, 1] Delta of correct class
+        x_m = x - batch_m  # prediction of ALL classees - Delta
 
-        output = torch.where(index, x_m, x)
-        return F.cross_entropy(self.scale * output, target, weight=self.weight, reduction=self.reduction)
+        output = torch.where(index, x_m, x)  # we take x_m if index else we take x
+        return F.cross_entropy(self.s * output, target, weight=self.weights, reduction=self.reduction)
 
 
 class SupervisedConLoss(nn.Module):

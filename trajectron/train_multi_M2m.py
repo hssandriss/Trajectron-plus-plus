@@ -337,8 +337,9 @@ if __name__ == '__main__':
     # Classification criterion
     # https://arxiv.org/pdf/1901.05555.pdf
     class_weights = class_weights.to(args.device)
-    criterion_2 = nn.CrossEntropyLoss(reduction='none')
-    criterion_1 = ScoreBasedConLoss()  # Use criterion_1._get_name() to get the name of the loss
+    # criterion_2 = nn.CrossEntropyLoss(reduction='none')
+    criterion_2 = LDAMLoss(cls_num_list=hyperparams['class_count'], weights=None, max_m=0.5, s=30, reduction='none').cuda()
+    # criterion_1 = ScoreBasedConLoss()  # Use criterion_1._get_name() to get the name of the loss
     # with open(f'{model_dir}/config_{extra_tag}.json', 'w') as fout:
     #     json.dump(hyperparams, fout)
     # criterion_1 = FocalLoss(weight=weight, gamma=0.5, reduction='none')

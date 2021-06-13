@@ -170,12 +170,12 @@ class MultiHypothesisNet(object):
         self.add_submodule(self.node_type + '/decoder/initial_mu',
                            model_if_absent=nn.Linear(self.state_length, self.pred_state_length))
         self.add_submodule(self.node_type + '/decoder/kalman_logits',
-                           model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'] + decoder_input_dims, self.nb_classes))
+                           model_if_absent=NormedLinear(self.hyperparams['dec_rnn_dim'] + decoder_input_dims, self.nb_classes))
 
         self.add_submodule(self.node_type + '/con_head',
                            model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'] + decoder_input_dims,
                                                      self.hyperparams['dec_rnn_dim'] + decoder_input_dims))
-        
+
         ####################
         #   Decoder LSTM   #
         ####################
@@ -187,11 +187,11 @@ class MultiHypothesisNet(object):
 
         self.add_submodule(self.node_type + '/decoder/rnn_cell',
                            model_if_absent=nn.GRUCell(decoder_input_dims_reg, self.hyperparams['dec_rnn_dim']))
-        
+
         self.add_submodule(self.node_type + '/decoder/proj_to_mus',
                            model_if_absent=nn.Linear(self.hyperparams['dec_rnn_dim'],
                                                      self.hyperparams['num_hyp'] * self.pred_state_length))
-        
+
         self.x_size = x_size
 
     def create_edge_models(self, edge_types):
@@ -984,3 +984,15 @@ class MultiHypothesisNet(object):
             losses = losses.mean(dim=0)
             sum_losses += losses
         return sum_losses
+
+
+class NormedLinear(nn.Module):
+
+    def __init__(self, in_features, out_features):
+        super(NormedLinear, self).__init__()
+        self.weight = nn.Parameter(torch.Tensor(in_features, out_features))
+        self.weight.data.uniform_(-1, 1).renorm_(2, 1, 1e-5).mul_(1e5)  # Linear layer initialization
+
+    def forward(self, x):
+        out = F.normalize(x, dim=1).mm(F.normalize(self.weight, dim=0))
+        return out
