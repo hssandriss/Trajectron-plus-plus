@@ -1131,7 +1131,7 @@ def train_gen_epoch(trajectron, trajectron_g, epoch, top_n, curr_iter_node_type,
 
 class LDAMLoss(nn.Module):
 
-    def __init__(self, cls_num_list, weights=None, max_m=0.5, s=30, reduction='none'):
+    def __init__(self, cls_num_list, weight=None, max_m=0.5, s=30, reduction='none'):
         super(LDAMLoss, self).__init__()
         m_list = 1.0 / np.sqrt(np.sqrt(cls_num_list))  # list of deltas without cste C
         m_list = m_list * (max_m / np.max(m_list))  # list of deltas when we multiply by C
@@ -1141,7 +1141,7 @@ class LDAMLoss(nn.Module):
         self.s = s
         self.cls_num_list = cls_num_list  # how many observation per class
         self.reduction = reduction
-        self.weights = weights
+        self.weight = weight
         # majority to minority
 
     def forward(self, x, target):
@@ -1155,7 +1155,7 @@ class LDAMLoss(nn.Module):
         x_m = x - batch_m  # prediction of ALL classees - Delta
 
         output = torch.where(index, x_m, x)  # we take x_m if index else we take x
-        return F.cross_entropy(self.s * output, target, weight=self.weights, reduction=self.reduction)
+        return F.cross_entropy(self.s * output, target, weight=self.weight, reduction=self.reduction)
 
 
 class SupervisedConLoss(nn.Module):

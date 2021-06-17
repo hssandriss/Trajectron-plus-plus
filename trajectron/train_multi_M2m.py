@@ -181,11 +181,11 @@ if __name__ == '__main__':
     hyperparams['data_loader_sampler'] = 'random'
     hyperparams['append_gen'] = 'yes'
     hyperparams['main_coef'] = 50
-    hyperparams['gen_coef'] = 1
-    hyperparams['gen_kl_coef'] = 1
+    hyperparams['gen_coef'] = 0.5
+    hyperparams['gen_kl_coef'] = 0.1
     hyperparams['gen_kl_obj'] = 'yes'
-    hyperparams['gen_angular_obj'] = 'no'
-    hyperparams['gen_distance_obj'] = 'no'
+    hyperparams['gen_angular_obj'] = 'yes'
+    hyperparams['gen_distance_obj'] = 'yes'
     hyperparams['gen_edges'] = 'no'
 
     # ! Override hyperparameters
@@ -253,22 +253,22 @@ if __name__ == '__main__':
     # TODO Make sure that the number of classes are the same for training, eval, test
         print(f"Loaded evaluation data from {eval_data_path}")
     # Offline Calculate Scene Graph
-    if hyperparams['offline_scene_graph'] == 'yes':
-        print(f"Offline calculating scene graphs")
-        print("Training scene graphs")
-        for i, scene in enumerate(train_scenes):
-            scene.calculate_scene_graph(train_env.attention_radius,
-                                        hyperparams['edge_addition_filter'],
-                                        hyperparams['edge_removal_filter'])
-            print(f"Created Scene Graph for Training Scene {i}")
+    # if hyperparams['offline_scene_graph'] == 'yes':
+    #     print(f"Offline calculating scene graphs")
+    #     print("Training scene graphs")
+    #     for i, scene in enumerate(train_scenes):
+    #         scene.calculate_scene_graph(train_env.attention_radius,
+    #                                     hyperparams['edge_addition_filter'],
+    #                                     hyperparams['edge_removal_filter'])
+    #         print(f"Created Scene Graph for Training Scene {i}")
 
-        if args.eval_every is not None or args.vis_every is not None:
-            print("Evaluation scene graphs")
-            for i, scene in enumerate(eval_scenes):
-                scene.calculate_scene_graph(eval_env.attention_radius,
-                                            hyperparams['edge_addition_filter'],
-                                            hyperparams['edge_removal_filter'])
-                print(f"Created Scene Graph for Evaluation Scene {i}")
+    #     if args.eval_every is not None or args.vis_every is not None:
+    #         print("Evaluation scene graphs")
+    #         for i, scene in enumerate(eval_scenes):
+    #             scene.calculate_scene_graph(eval_env.attention_radius,
+    #                                         hyperparams['edge_addition_filter'],
+    #                                         hyperparams['edge_removal_filter'])
+    #             print(f"Created Scene Graph for Evaluation Scene {i}")
     # Creating Models
     if args.net_g_ts:
         print("Loading baseline classifier g:")
@@ -338,7 +338,7 @@ if __name__ == '__main__':
     # https://arxiv.org/pdf/1901.05555.pdf
     class_weights = class_weights.to(args.device)
     # criterion_2 = nn.CrossEntropyLoss(reduction='none')
-    criterion_2 = LDAMLoss(cls_num_list=hyperparams['class_count'], weights=None, max_m=0.5, s=30, reduction='none').cuda()
+    criterion_2 = LDAMLoss(cls_num_list=hyperparams['class_count'], weight=None, max_m=0.5, s=30, reduction='none').cuda()
     # criterion_1 = ScoreBasedConLoss()  # Use criterion_1._get_name() to get the name of the loss
     # with open(f'{model_dir}/config_{extra_tag}.json', 'w') as fout:
     #     json.dump(hyperparams, fout)
@@ -383,7 +383,6 @@ if __name__ == '__main__':
             cls_generated.append({"epoch": epoch, "generated per class": class_gen})
         else:
             print("**** Train Epoch without generation ****")
-
             # if epoch <= 300:
             # epoch_loss = train_epoch_con_score_based(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_1,
             #                                          train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
@@ -392,9 +391,9 @@ if __name__ == '__main__':
                                                       train_data_loader, epoch, top_n, hyperparams, log_writer, args.device)
             # class_acc, class_loss = train_epoch(trajectron, curr_iter_node_type, optimizer, lr_scheduler, criterion_2,
             #                                     train_data_loader, epoch, hyperparams, log_writer, args.device)
-        # if epoch > 200:
-        #     hyperparams['weight_in_ce'] = ">200"
-        #     criterion_2 = nn.CrossEntropyLoss(reduction='none', weight=class_weights)
+        # if epoch >= 175:
+        #     hyperparams['weight_in_ce'] = ">=175"
+        #     criterion_2 = LDAMLoss(cls_num_list=hyperparams['class_count'], weight=class_weights, max_m=0.5, s=30, reduction='none').cuda()
 
         if args.eval_every is not None and not args.debug and epoch % args.eval_every == 0 and epoch > 0:
             validation_metrics(model=trajectron, criterion=criterion_2,
@@ -417,3 +416,4 @@ if __name__ == '__main__':
                 json.dump(losses, fout)
         with open(os.path.join(model_dir, 'config.json'), 'w') as conf_json:
             json.dump(hyperparams, conf_json)
+    print("The model directory is under: " + model_dir)

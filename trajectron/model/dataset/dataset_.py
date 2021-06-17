@@ -11,7 +11,7 @@ from .preprocessing import get_node_timestep_data
 
 
 class EnvironmentDatasetKalman(object):
-    def __init__(self, env, scores_path, state, pred_state, node_freq_mult, scene_freq_mult, hyperparams, stack_right=0.007, borders=None, predifined_num_classes=None, **kwargs):
+    def __init__(self, env, scores_path, state, pred_state, node_freq_mult, scene_freq_mult, hyperparams, stack_right=None, borders=None, predifined_num_classes=None, **kwargs):
         self.env = env
         self.state = state
         self.pred_state = pred_state
@@ -54,7 +54,7 @@ class EnvironmentDatasetKalman(object):
 
 class NodeTypeDatasetKalman(data.Dataset):
     def __init__(self, env, scores_path, node_type, state, pred_state, node_freq_mult,
-                 scene_freq_mult, hyperparams, augment=False, stack_right=0.007, borders=None, predifined_num_classes=None, **kwargs):
+                 scene_freq_mult, hyperparams, augment=False, stack_right=None, borders=None, predifined_num_classes=None, **kwargs):
         self.env = env
         self.state = state
         self.pred_state = pred_state
@@ -175,8 +175,10 @@ class NodeTypeDatasetKalman(data.Dataset):
             dic[i] = 0
         for l in lbls:
             dic[l] += 1
+
         # Stacking the right 0.7 percent into a class
         if self.num_classes is not None:
+            print("using predefined num classes")
             minority_class = self.num_classes - 1
             for l in range(len(lbls)):
                 if lbls[l] > minority_class:
@@ -185,6 +187,8 @@ class NodeTypeDatasetKalman(data.Dataset):
                 dic[minority_class] += dic[i]
                 del(dic[i])
         elif stack_right is not None and isinstance(stack_right, float):
+            print("using stack right")
+
             dic_ = deepcopy(dic)
             sum_ = 0
             done = False
@@ -204,11 +208,11 @@ class NodeTypeDatasetKalman(data.Dataset):
                     lbls[l] = minority_class
             assert all(lbls[verification_mask] == minority_class)
             dic = dic_
+
         # Sorting classes lower has more data points
         original_keys = list(dic.keys())
         new_keys = sorted(original_keys, key=lambda x: dic[x], reverse=True)
         sorting_dic = {new_keys[k]: k for k in range(len(original_keys))}
-
         # Overwriting class values
         for l in range(len(lbls)):
             lbls[l] = sorting_dic[lbls[l]]
@@ -234,11 +238,11 @@ class NodeTypeDatasetKalman(data.Dataset):
         # https://arxiv.org/pdf/1901.05555.pdf
         n = scores.shape[0]
         beta = (n - 1) / n
-        # import pdb; pdb.set_trace()
+
         self.balanced_class_weights = (1 - beta) / (1 - torch.pow(beta, torch.tensor(class_count, dtype=torch.float)))
         self.balanced_class_weights_all = self.balanced_class_weights[lbls]
         self.class_weights = class_weights
-
+        self.borders = None
         self.kalman_classes = lbls
         self.class_count_dict = dic_sorted
 
